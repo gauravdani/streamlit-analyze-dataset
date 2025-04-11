@@ -639,82 +639,168 @@ if st.session_state.conn:
             This provides a consistent baseline for comparison regardless of the filters applied.
             """)
             
-            # Lane Performance Analysis
-            st.subheader("Lane Performance Analysis")
-            
-            if len(st.session_state.filtered_data) > 0:
-                # Calculate median conversion rate by lane type
-                lane_performance = st.session_state.filtered_data.groupby('LANE_TYPE').agg({
-                    'CONVERSION_RATE_PCT': 'median',
-                    'DISTINCT_USER_IMPRESSIONS': 'sum',
-                    'DISTINCT_USER_CLICKS': 'sum'
-                }).reset_index()
+            # Add a collapsible section for mean and median calculations
+            with st.expander("View Mean and Median Calculations"):
+                st.markdown("""
+                ### How Metrics Are Calculated in Trend Analysis
                 
-                # Sort by conversion rate for better visualization
-                lane_performance = lane_performance.sort_values('CONVERSION_RATE_PCT', ascending=False)
+                The trend analysis section uses the following calculations:
+                """)
                 
-                # Plot median conversion rate by lane
-                fig_lane_conv = go.Figure()
-                fig_lane_conv.add_trace(go.Bar(
-                    x=lane_performance['LANE_TYPE'],
-                    y=lane_performance['CONVERSION_RATE_PCT'],
-                    text=lane_performance['CONVERSION_RATE_PCT'].round(2),
-                    textposition='auto',
-                    marker_color='green'
-                ))
+                # Create a table showing the calculations
+                calc_data = {
+                    "Metric": [
+                        "Daily Impressions", 
+                        "Daily Clicks", 
+                        "Daily Conversion Rate", 
+                        "Non-Herolane Conversion Rate"
+                    ],
+                    "Calculation Method": [
+                        "Sum of DISTINCT_USER_IMPRESSIONS for each date", 
+                        "Sum of DISTINCT_USER_CLICKS for each date", 
+                        "Mean of CONVERSION_RATE_PCT for each date", 
+                        "Mean of CONVERSION_RATE_PCT for non-herolane lanes for each date"
+                    ],
+                    "Aggregation Function": [
+                        "sum()", 
+                        "sum()", 
+                        "mean()", 
+                        "mean()"
+                    ],
+                    "Example": [
+                        f"{daily_metrics['DISTINCT_USER_IMPRESSIONS'].sum():,.0f} total impressions", 
+                        f"{daily_metrics['DISTINCT_USER_CLICKS'].sum():,.0f} total clicks", 
+                        f"{daily_metrics['CONVERSION_RATE_PCT'].mean():.2f}% average conversion rate", 
+                        f"{daily_metrics['NON_HEROLANE_CONV_RATE'].mean():.2f}% average non-herolane conversion rate"
+                    ]
+                }
                 
-                # Add a horizontal line for the overall median
-                overall_median = lane_performance['CONVERSION_RATE_PCT'].median()
-                fig_lane_conv.add_shape(
-                    type="line",
-                    x0=-0.5,
-                    y0=overall_median,
-                    x1=len(lane_performance) - 0.5,
-                    y1=overall_median,
-                    line=dict(
-                        color="red",
-                        width=2,
-                        dash="dash",
-                    ),
-                )
-                
-                # Add annotation for the median line
-                fig_lane_conv.add_annotation(
-                    x=len(lane_performance) - 1,
-                    y=overall_median,
-                    text=f"Median: {overall_median:.2f}%",
-                    showarrow=False,
-                    yshift=10,
-                    font=dict(color="red")
-                )
-                
-                fig_lane_conv.update_layout(
-                    title='Median Conversion Rate by Lane Type',
-                    xaxis_title='Lane Type',
-                    yaxis_title='Conversion Rate (%)',
-                    showlegend=False,
-                    height=500
-                )
-                
-                # Rotate x-axis labels for better readability
-                fig_lane_conv.update_xaxes(tickangle=45)
-                
-                st.plotly_chart(fig_lane_conv, use_container_width=True)
-                
-                # Display the data table
-                st.subheader("Lane Performance Data")
                 st.dataframe(
-                    lane_performance[['LANE_TYPE', 'CONVERSION_RATE_PCT', 'DISTINCT_USER_IMPRESSIONS', 'DISTINCT_USER_CLICKS']]
-                    .rename(columns={
-                        'LANE_TYPE': 'Lane Type',
-                        'CONVERSION_RATE_PCT': 'Median Conversion Rate (%)',
-                        'DISTINCT_USER_IMPRESSIONS': 'Total Impressions',
-                        'DISTINCT_USER_CLICKS': 'Total Clicks'
-                    }),
-                    use_container_width=True
+                    pd.DataFrame(calc_data),
+                    use_container_width=True,
+                    hide_index=True
                 )
-            else:
-                st.warning("No data available for lane performance analysis with current filters.")
+                
+                st.markdown("""
+                ### Additional Statistics
+                
+                The following statistics are calculated across the entire date range:
+                """)
+                
+                # Calculate additional statistics
+                stats_data = {
+                    "Statistic": [
+                        "Overall Mean Conversion Rate", 
+                        "Overall Median Conversion Rate", 
+                        "Non-Herolane Mean Conversion Rate", 
+                        "Non-Herolane Median Conversion Rate",
+                        "Total Impressions", 
+                        "Total Clicks"
+                    ],
+                    "Value": [
+                        f"{daily_metrics['CONVERSION_RATE_PCT'].mean():.2f}%", 
+                        f"{daily_metrics['CONVERSION_RATE_PCT'].median():.2f}%", 
+                        f"{daily_metrics['NON_HEROLANE_CONV_RATE'].mean():.2f}%", 
+                        f"{daily_metrics['NON_HEROLANE_CONV_RATE'].median():.2f}%",
+                        f"{daily_metrics['DISTINCT_USER_IMPRESSIONS'].sum():,.0f}", 
+                        f"{daily_metrics['DISTINCT_USER_CLICKS'].sum():,.0f}"
+                    ]
+                }
+                
+                st.dataframe(
+                    pd.DataFrame(stats_data),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                st.markdown("""
+                ### Calculation Details
+                
+                - **Daily Aggregation**: Data is first grouped by date, then aggregated using the specified functions
+                - **Mean vs. Median**: 
+                  - Mean is used for daily conversion rates to show the average performance
+                  - Median is used in the lane performance analysis to better represent typical performance
+                - **Non-Herolane Calculation**: Calculated from the complete dataset (not affected by filters)
+                """)
+        else:
+            st.warning("No data available for trend analysis with current filters.")
+        
+        # Lane Performance Analysis
+        st.subheader("Lane Performance Analysis")
+        
+        if len(st.session_state.filtered_data) > 0:
+            # Calculate median conversion rate by lane type
+            lane_performance = st.session_state.filtered_data.groupby('LANE_TYPE').agg({
+                'CONVERSION_RATE_PCT': 'median',
+                'DISTINCT_USER_IMPRESSIONS': 'sum',
+                'DISTINCT_USER_CLICKS': 'sum'
+            }).reset_index()
+            
+            # Sort by conversion rate for better visualization
+            lane_performance = lane_performance.sort_values('CONVERSION_RATE_PCT', ascending=False)
+            
+            # Plot median conversion rate by lane
+            fig_lane_conv = go.Figure()
+            fig_lane_conv.add_trace(go.Bar(
+                x=lane_performance['LANE_TYPE'],
+                y=lane_performance['CONVERSION_RATE_PCT'],
+                text=lane_performance['CONVERSION_RATE_PCT'].round(2),
+                textposition='auto',
+                marker_color='green'
+            ))
+            
+            # Add a horizontal line for the overall median
+            overall_median = lane_performance['CONVERSION_RATE_PCT'].median()
+            fig_lane_conv.add_shape(
+                type="line",
+                x0=-0.5,
+                y0=overall_median,
+                x1=len(lane_performance) - 0.5,
+                y1=overall_median,
+                line=dict(
+                    color="red",
+                    width=2,
+                    dash="dash",
+                ),
+            )
+            
+            # Add annotation for the median line
+            fig_lane_conv.add_annotation(
+                x=len(lane_performance) - 1,
+                y=overall_median,
+                text=f"Median: {overall_median:.2f}%",
+                showarrow=False,
+                yshift=10,
+                font=dict(color="red")
+            )
+            
+            fig_lane_conv.update_layout(
+                title='Median Conversion Rate by Lane Type',
+                xaxis_title='Lane Type',
+                yaxis_title='Conversion Rate (%)',
+                showlegend=False,
+                height=500
+            )
+            
+            # Rotate x-axis labels for better readability
+            fig_lane_conv.update_xaxes(tickangle=45)
+            
+            st.plotly_chart(fig_lane_conv, use_container_width=True)
+            
+            # Display the data table
+            st.subheader("Lane Performance Data")
+            st.dataframe(
+                lane_performance[['LANE_TYPE', 'CONVERSION_RATE_PCT', 'DISTINCT_USER_IMPRESSIONS', 'DISTINCT_USER_CLICKS']]
+                .rename(columns={
+                    'LANE_TYPE': 'Lane Type',
+                    'CONVERSION_RATE_PCT': 'Median Conversion Rate (%)',
+                    'DISTINCT_USER_IMPRESSIONS': 'Total Impressions',
+                    'DISTINCT_USER_CLICKS': 'Total Clicks'
+                }),
+                use_container_width=True
+            )
+        else:
+            st.warning("No data available for lane performance analysis with current filters.")
     else:
         st.info("👈 Click 'Load Analytics Data' in the sidebar to analyze the dataset.")
 else:
