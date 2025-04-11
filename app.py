@@ -13,7 +13,7 @@ load_dotenv()
 
 # Page config
 st.set_page_config(
-    page_title="Snowflake Analytics Dashboard",
+    page_title="Recommendations Analytics Dashboard",
     page_icon="❄️",
     layout="wide"
 )
@@ -47,11 +47,13 @@ if 'lane_type_filter' not in st.session_state:
     st.session_state.lane_type_filter = []
 if 'is_registered_filter' not in st.session_state:
     st.session_state.is_registered_filter = []
+if 'device_platform_filter' not in st.session_state:
+    st.session_state.device_platform_filter = []
 if 'date_preset' not in st.session_state:
     st.session_state.date_preset = None
 
 # Main app
-st.title("❄️ Snowflake Analytics Dashboard")
+st.title("❄️ Recommendation Analytics Dashboard")
 
 def test_connection():
     """Test connection to Snowflake and display detailed information"""
@@ -152,7 +154,7 @@ def run_analytics_query():
             WHERE base_date > dateadd(DAY, -90, CURRENT_DATE)
         )
         SELECT 
-            a.base_date,a.lane_type,a.is_registered,
+            a.base_date,a.lane_type,a.is_registered,a.device_platform,
             HLL(DISTINCT a.user_id) as distinct_user_impressions,
             HLL(DISTINCT CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) AS distinct_user_clicks,
             ROUND((HLL(CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) / NULLIF(COUNT(DISTINCT a.user_id), 0)) * 100, 2) AS conversion_rate_pct 
@@ -208,6 +210,10 @@ def apply_filters():
     # Apply is_registered filter
     if st.session_state.is_registered_filter:
         filtered_df = filtered_df[filtered_df['IS_REGISTERED'].isin(st.session_state.is_registered_filter)]
+    
+    # Apply device_platform filter
+    if st.session_state.device_platform_filter:
+        filtered_df = filtered_df[filtered_df['DEVICE_PLATFORM'].isin(st.session_state.device_platform_filter)]
     
     st.session_state.filtered_data = filtered_df
     return filtered_df
@@ -371,6 +377,24 @@ if st.session_state.data_loaded:
         st.session_state.is_registered_filter = selected_registered
         apply_filters()
         st.rerun()
+    
+    # Device platform filter
+    st.sidebar.subheader("Device Platform")
+    unique_platforms = sorted(st.session_state.data['DEVICE_PLATFORM'].unique().tolist())
+    
+    # Create multiselect for device_platform
+    selected_platforms = st.sidebar.multiselect(
+        "Filter by Device Platform",
+        options=unique_platforms,
+        default=st.session_state.device_platform_filter,
+        key="device_platform_multiselect"
+    )
+    
+    # Update device platform filter in session state
+    if selected_platforms != st.session_state.device_platform_filter:
+        st.session_state.device_platform_filter = selected_platforms
+        apply_filters()
+        st.rerun()
 
 # Main content
 if st.session_state.conn:
@@ -401,6 +425,11 @@ if st.session_state.conn:
                 st.write(f"**Registration Status:** {', '.join(st.session_state.is_registered_filter)}")
             else:
                 st.write("**Registration Status:** All")
+            
+            if st.session_state.device_platform_filter:
+                st.write(f"**Device Platforms:** {', '.join(st.session_state.device_platform_filter)}")
+            else:
+                st.write("**Device Platforms:** All")
         
         # Display raw data
         with st.expander("View Raw Data"):
