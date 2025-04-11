@@ -421,6 +421,39 @@ if st.session_state.conn:
             # Calculate clickthrough rate
             daily_metrics['CLICKTHROUGH_RATE'] = (daily_metrics['DISTINCT_USER_CLICKS'] / daily_metrics['DISTINCT_USER_IMPRESSIONS'] * 100).round(2)
             
+            # Calculate median clickthrough rate for non-herolane lanes
+            non_herolane_data = st.session_state.filtered_data[st.session_state.filtered_data['LANE_TYPE'] != 'herolane']
+            non_herolane_daily = non_herolane_data.groupby('BASE_DATE').agg({
+                'DISTINCT_USER_IMPRESSIONS': 'sum',
+                'DISTINCT_USER_CLICKS': 'sum'
+            }).reset_index()
+            
+            # Calculate clickthrough rate for non-herolane lanes
+            non_herolane_daily['NON_HEROLANE_CTR'] = (non_herolane_daily['DISTINCT_USER_CLICKS'] / non_herolane_daily['DISTINCT_USER_IMPRESSIONS'] * 100).round(2)
+            
+            # Merge with main metrics
+            daily_metrics = daily_metrics.merge(
+                non_herolane_daily[['BASE_DATE', 'NON_HEROLANE_CTR']], 
+                on='BASE_DATE', 
+                how='left'
+            )
+            
+            # Calculate median conversion rate for non-herolane lanes
+            non_herolane_data = st.session_state.filtered_data[st.session_state.filtered_data['LANE_TYPE'] != 'herolane']
+            non_herolane_daily_conv = non_herolane_data.groupby('BASE_DATE').agg({
+                'CONVERSION_RATE_PCT': 'mean'
+            }).reset_index()
+            
+            # Rename column
+            non_herolane_daily_conv = non_herolane_daily_conv.rename(columns={'CONVERSION_RATE_PCT': 'NON_HEROLANE_CONV_RATE'})
+            
+            # Merge with main metrics
+            daily_metrics = daily_metrics.merge(
+                non_herolane_daily_conv[['BASE_DATE', 'NON_HEROLANE_CONV_RATE']], 
+                on='BASE_DATE', 
+                how='left'
+            )
+            
             # Create tabs for different metrics
             tab1, tab2, tab3, tab4 = st.tabs(["Impressions & Clicks", "Conversion Rate", "Clickthrough Rate", "Combined View"])
             
@@ -449,29 +482,47 @@ if st.session_state.conn:
             
             with tab2:
                 # Plot conversion rate
-                fig_conv = px.line(
-                    daily_metrics, 
-                    x='BASE_DATE', 
-                    y='CONVERSION_RATE_PCT',
-                    title='Daily Conversion Rate Over Time'
-                )
+                fig_conv = go.Figure()
+                fig_conv.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['CONVERSION_RATE_PCT'],
+                    name='Overall Conversion Rate',
+                    line=dict(color='green')
+                ))
+                fig_conv.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['NON_HEROLANE_CONV_RATE'],
+                    name='Non-Herolane Median Conversion Rate',
+                    line=dict(color='orange', dash='dash')
+                ))
                 fig_conv.update_layout(
+                    title='Daily Conversion Rate Over Time',
                     xaxis_title='Date',
-                    yaxis_title='Conversion Rate (%)'
+                    yaxis_title='Conversion Rate (%)',
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 st.plotly_chart(fig_conv, use_container_width=True)
             
             with tab3:
                 # Plot clickthrough rate
-                fig_ctr = px.line(
-                    daily_metrics, 
-                    x='BASE_DATE', 
-                    y='CLICKTHROUGH_RATE',
-                    title='Daily Clickthrough Rate Over Time'
-                )
+                fig_ctr = go.Figure()
+                fig_ctr.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['CLICKTHROUGH_RATE'],
+                    name='Overall Clickthrough Rate',
+                    line=dict(color='purple')
+                ))
+                fig_ctr.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['NON_HEROLANE_CTR'],
+                    name='Non-Herolane Median Clickthrough Rate',
+                    line=dict(color='orange', dash='dash')
+                ))
                 fig_ctr.update_layout(
+                    title='Daily Clickthrough Rate Over Time',
                     xaxis_title='Date',
-                    yaxis_title='Clickthrough Rate (%)'
+                    yaxis_title='Clickthrough Rate (%)',
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 st.plotly_chart(fig_ctr, use_container_width=True)
             
@@ -504,12 +555,30 @@ if st.session_state.conn:
                     yaxis='y2'
                 ))
                 
+                # Add non-herolane conversion rate trace
+                fig_combined.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['NON_HEROLANE_CONV_RATE'],
+                    name='Non-Herolane Conv Rate (%)',
+                    line=dict(color='orange', dash='dash'),
+                    yaxis='y2'
+                ))
+                
                 # Add clickthrough rate trace with secondary y-axis
                 fig_combined.add_trace(go.Scatter(
                     x=daily_metrics['BASE_DATE'], 
                     y=daily_metrics['CLICKTHROUGH_RATE'],
                     name='Clickthrough Rate (%)',
                     line=dict(color='purple'),
+                    yaxis='y2'
+                ))
+                
+                # Add non-herolane clickthrough rate trace
+                fig_combined.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['NON_HEROLANE_CTR'],
+                    name='Non-Herolane CTR (%)',
+                    line=dict(color='orange', dash='dot'),
                     yaxis='y2'
                 ))
                 
