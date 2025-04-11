@@ -430,13 +430,6 @@ if st.session_state.conn:
             
             **Interpretation:** A higher conversion rate indicates that a larger proportion of users who see recommendations are engaging with them by clicking. This metric helps identify which recommendation lanes are most effective at driving user engagement.
             
-            #### Clickthrough Rate (CTR)
-            **Definition:** The percentage of unique users who clicked on a recommendation after seeing it.
-            
-            **Calculation:** (Number of unique users who clicked / Number of unique users who saw the recommendation) × 100
-            
-            **Interpretation:** While mathematically similar to conversion rate, CTR is often used in the context of measuring the effectiveness of recommendation visibility and placement. A higher CTR suggests that the recommendation is more visible or compelling to users.
-            
             #### Impressions
             **Definition:** The number of times recommendations are shown to unique users.
             
@@ -520,9 +513,6 @@ if st.session_state.conn:
                 'CONVERSION_RATE_PCT': 'mean'
             }).reset_index()
             
-            # Calculate clickthrough rate for filtered data
-            daily_metrics['CLICKTHROUGH_RATE'] = (daily_metrics['DISTINCT_USER_CLICKS'] / daily_metrics['DISTINCT_USER_IMPRESSIONS'] * 100).round(2)
-            
             # Calculate metrics for non-herolane lanes from the original unfiltered data
             # This ensures these metrics are not affected by the filters
             non_herolane_data = st.session_state.data[st.session_state.data['LANE_TYPE'] != 'herolane']
@@ -532,21 +522,18 @@ if st.session_state.conn:
                 'CONVERSION_RATE_PCT': 'mean'
             }).reset_index()
             
-            # Calculate clickthrough rate for non-herolane lanes
-            non_herolane_daily['NON_HEROLANE_CTR'] = (non_herolane_daily['DISTINCT_USER_CLICKS'] / non_herolane_daily['DISTINCT_USER_IMPRESSIONS'] * 100).round(2)
-            
             # Rename conversion rate column
             non_herolane_daily = non_herolane_daily.rename(columns={'CONVERSION_RATE_PCT': 'NON_HEROLANE_CONV_RATE'})
             
             # Merge with main metrics
             daily_metrics = daily_metrics.merge(
-                non_herolane_daily[['BASE_DATE', 'NON_HEROLANE_CTR', 'NON_HEROLANE_CONV_RATE']], 
+                non_herolane_daily[['BASE_DATE', 'NON_HEROLANE_CONV_RATE']], 
                 on='BASE_DATE', 
                 how='left'
             )
             
             # Create tabs for different metrics
-            tab1, tab2, tab3, tab4 = st.tabs(["Impressions & Clicks", "Conversion Rate", "Clickthrough Rate", "Combined View"])
+            tab1, tab2, tab3 = st.tabs(["Impressions & Clicks", "Conversion Rate", "Combined View"])
             
             with tab1:
                 # Plot impressions and clicks
@@ -595,29 +582,6 @@ if st.session_state.conn:
                 st.plotly_chart(fig_conv, use_container_width=True)
             
             with tab3:
-                # Plot clickthrough rate
-                fig_ctr = go.Figure()
-                fig_ctr.add_trace(go.Scatter(
-                    x=daily_metrics['BASE_DATE'], 
-                    y=daily_metrics['CLICKTHROUGH_RATE'],
-                    name='Overall Clickthrough Rate',
-                    line=dict(color='purple')
-                ))
-                fig_ctr.add_trace(go.Scatter(
-                    x=daily_metrics['BASE_DATE'], 
-                    y=daily_metrics['NON_HEROLANE_CTR'],
-                    name='Non-Herolane Median Clickthrough Rate',
-                    line=dict(color='orange', dash='dash')
-                ))
-                fig_ctr.update_layout(
-                    title='Daily Clickthrough Rate Over Time',
-                    xaxis_title='Date',
-                    yaxis_title='Clickthrough Rate (%)',
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                st.plotly_chart(fig_ctr, use_container_width=True)
-            
-            with tab4:
                 # Combined view with secondary y-axis
                 fig_combined = go.Figure()
                 
@@ -655,24 +619,6 @@ if st.session_state.conn:
                     yaxis='y2'
                 ))
                 
-                # Add clickthrough rate trace with secondary y-axis
-                fig_combined.add_trace(go.Scatter(
-                    x=daily_metrics['BASE_DATE'], 
-                    y=daily_metrics['CLICKTHROUGH_RATE'],
-                    name='Clickthrough Rate (%)',
-                    line=dict(color='purple'),
-                    yaxis='y2'
-                ))
-                
-                # Add non-herolane clickthrough rate trace
-                fig_combined.add_trace(go.Scatter(
-                    x=daily_metrics['BASE_DATE'], 
-                    y=daily_metrics['NON_HEROLANE_CTR'],
-                    name='Non-Herolane CTR (%)',
-                    line=dict(color='orange', dash='dot'),
-                    yaxis='y2'
-                ))
-                
                 # Update layout with secondary y-axis
                 fig_combined.update_layout(
                     title='Combined Metrics Over Time',
@@ -704,140 +650,69 @@ if st.session_state.conn:
                     'DISTINCT_USER_CLICKS': 'sum'
                 }).reset_index()
                 
-                # Calculate clickthrough rate for each lane
-                lane_performance['CLICKTHROUGH_RATE'] = (lane_performance['DISTINCT_USER_CLICKS'] / lane_performance['DISTINCT_USER_IMPRESSIONS'] * 100).round(2)
-                
                 # Sort by conversion rate for better visualization
                 lane_performance = lane_performance.sort_values('CONVERSION_RATE_PCT', ascending=False)
                 
-                # Create tabs for different lane performance metrics
-                lane_tab1, lane_tab2 = st.tabs(["Conversion Rate by Lane", "Clickthrough Rate by Lane"])
+                # Plot median conversion rate by lane
+                fig_lane_conv = go.Figure()
+                fig_lane_conv.add_trace(go.Bar(
+                    x=lane_performance['LANE_TYPE'],
+                    y=lane_performance['CONVERSION_RATE_PCT'],
+                    text=lane_performance['CONVERSION_RATE_PCT'].round(2),
+                    textposition='auto',
+                    marker_color='green'
+                ))
                 
-                with lane_tab1:
-                    # Plot median conversion rate by lane
-                    fig_lane_conv = go.Figure()
-                    fig_lane_conv.add_trace(go.Bar(
-                        x=lane_performance['LANE_TYPE'],
-                        y=lane_performance['CONVERSION_RATE_PCT'],
-                        text=lane_performance['CONVERSION_RATE_PCT'].round(2),
-                        textposition='auto',
-                        marker_color='green'
-                    ))
-                    
-                    # Add a horizontal line for the overall median
-                    overall_median = lane_performance['CONVERSION_RATE_PCT'].median()
-                    fig_lane_conv.add_shape(
-                        type="line",
-                        x0=-0.5,
-                        y0=overall_median,
-                        x1=len(lane_performance) - 0.5,
-                        y1=overall_median,
-                        line=dict(
-                            color="red",
-                            width=2,
-                            dash="dash",
-                        ),
-                    )
-                    
-                    # Add annotation for the median line
-                    fig_lane_conv.add_annotation(
-                        x=len(lane_performance) - 1,
-                        y=overall_median,
-                        text=f"Median: {overall_median:.2f}%",
-                        showarrow=False,
-                        yshift=10,
-                        font=dict(color="red")
-                    )
-                    
-                    fig_lane_conv.update_layout(
-                        title='Median Conversion Rate by Lane Type',
-                        xaxis_title='Lane Type',
-                        yaxis_title='Conversion Rate (%)',
-                        showlegend=False,
-                        height=500
-                    )
-                    
-                    # Rotate x-axis labels for better readability
-                    fig_lane_conv.update_xaxes(tickangle=45)
-                    
-                    st.plotly_chart(fig_lane_conv, use_container_width=True)
-                    
-                    # Display the data table
-                    st.subheader("Lane Performance Data")
-                    st.dataframe(
-                        lane_performance[['LANE_TYPE', 'CONVERSION_RATE_PCT', 'CLICKTHROUGH_RATE', 'DISTINCT_USER_IMPRESSIONS', 'DISTINCT_USER_CLICKS']]
-                        .rename(columns={
-                            'LANE_TYPE': 'Lane Type',
-                            'CONVERSION_RATE_PCT': 'Median Conversion Rate (%)',
-                            'CLICKTHROUGH_RATE': 'Clickthrough Rate (%)',
-                            'DISTINCT_USER_IMPRESSIONS': 'Total Impressions',
-                            'DISTINCT_USER_CLICKS': 'Total Clicks'
-                        }),
-                        use_container_width=True
-                    )
+                # Add a horizontal line for the overall median
+                overall_median = lane_performance['CONVERSION_RATE_PCT'].median()
+                fig_lane_conv.add_shape(
+                    type="line",
+                    x0=-0.5,
+                    y0=overall_median,
+                    x1=len(lane_performance) - 0.5,
+                    y1=overall_median,
+                    line=dict(
+                        color="red",
+                        width=2,
+                        dash="dash",
+                    ),
+                )
                 
-                with lane_tab2:
-                    # Plot clickthrough rate by lane
-                    fig_lane_ctr = go.Figure()
-                    fig_lane_ctr.add_trace(go.Bar(
-                        x=lane_performance['LANE_TYPE'],
-                        y=lane_performance['CLICKTHROUGH_RATE'],
-                        text=lane_performance['CLICKTHROUGH_RATE'].round(2),
-                        textposition='auto',
-                        marker_color='purple'
-                    ))
-                    
-                    # Add a horizontal line for the overall median
-                    overall_median_ctr = lane_performance['CLICKTHROUGH_RATE'].median()
-                    fig_lane_ctr.add_shape(
-                        type="line",
-                        x0=-0.5,
-                        y0=overall_median_ctr,
-                        x1=len(lane_performance) - 0.5,
-                        y1=overall_median_ctr,
-                        line=dict(
-                            color="red",
-                            width=2,
-                            dash="dash",
-                        ),
-                    )
-                    
-                    # Add annotation for the median line
-                    fig_lane_ctr.add_annotation(
-                        x=len(lane_performance) - 1,
-                        y=overall_median_ctr,
-                        text=f"Median: {overall_median_ctr:.2f}%",
-                        showarrow=False,
-                        yshift=10,
-                        font=dict(color="red")
-                    )
-                    
-                    fig_lane_ctr.update_layout(
-                        title='Clickthrough Rate by Lane Type',
-                        xaxis_title='Lane Type',
-                        yaxis_title='Clickthrough Rate (%)',
-                        showlegend=False,
-                        height=500
-                    )
-                    
-                    # Rotate x-axis labels for better readability
-                    fig_lane_ctr.update_xaxes(tickangle=45)
-                    
-                    st.plotly_chart(fig_lane_ctr, use_container_width=True)
-                    
-                    # Display the data table
-                    st.subheader("Lane Performance Data")
-                    st.dataframe(
-                        lane_performance[['LANE_TYPE', 'CONVERSION_RATE_PCT', 'CLICKTHROUGH_RATE', 'DISTINCT_USER_IMPRESSIONS', 'DISTINCT_USER_CLICKS']]
-                        .rename(columns={
-                            'LANE_TYPE': 'Lane Type',
-                            'CONVERSION_RATE_PCT': 'Median Conversion Rate (%)',
-                            'CLICKTHROUGH_RATE': 'Clickthrough Rate (%)',
-                            'DISTINCT_USER_IMPRESSIONS': 'Total Impressions',
-                            'DISTINCT_USER_CLICKS': 'Total Clicks'
-                        }),
-                        use_container_width=True
-                    )
+                # Add annotation for the median line
+                fig_lane_conv.add_annotation(
+                    x=len(lane_performance) - 1,
+                    y=overall_median,
+                    text=f"Median: {overall_median:.2f}%",
+                    showarrow=False,
+                    yshift=10,
+                    font=dict(color="red")
+                )
+                
+                fig_lane_conv.update_layout(
+                    title='Median Conversion Rate by Lane Type',
+                    xaxis_title='Lane Type',
+                    yaxis_title='Conversion Rate (%)',
+                    showlegend=False,
+                    height=500
+                )
+                
+                # Rotate x-axis labels for better readability
+                fig_lane_conv.update_xaxes(tickangle=45)
+                
+                st.plotly_chart(fig_lane_conv, use_container_width=True)
+                
+                # Display the data table
+                st.subheader("Lane Performance Data")
+                st.dataframe(
+                    lane_performance[['LANE_TYPE', 'CONVERSION_RATE_PCT', 'DISTINCT_USER_IMPRESSIONS', 'DISTINCT_USER_CLICKS']]
+                    .rename(columns={
+                        'LANE_TYPE': 'Lane Type',
+                        'CONVERSION_RATE_PCT': 'Median Conversion Rate (%)',
+                        'DISTINCT_USER_IMPRESSIONS': 'Total Impressions',
+                        'DISTINCT_USER_CLICKS': 'Total Clicks'
+                    }),
+                    use_container_width=True
+                )
             else:
                 st.warning("No data available for lane performance analysis with current filters.")
     else:
