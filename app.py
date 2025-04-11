@@ -158,7 +158,7 @@ def run_analytics_query():
             ROUND((HLL(CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) / NULLIF(COUNT(DISTINCT a.user_id), 0)) * 100, 2) AS conversion_rate_pct 
         FROM correct_lane_views_f a 
         LEFT JOIN correct_as_f b ON 
-        (a.user_id = b.user_id and a.user_id like 'JNDE%' and a.lane_type = b.rlane_type AND datediff(day, a.base_date, b.base_date) < 8 and b.base_date >= a.base_date)
+        (a.user_id = b.user_id  and a.lane_type = b.rlane_type AND datediff(day, a.base_date, b.base_date) < 8 and b.base_date >= a.base_date)
         GROUP BY all 
         order by 1 asc;
         """
