@@ -411,45 +411,34 @@ if st.session_state.conn:
         
         # Prepare data for trendlines
         if len(st.session_state.filtered_data) > 0:
-            # Group by date to get daily metrics
+            # Group by date to get daily metrics for filtered data
             daily_metrics = st.session_state.filtered_data.groupby('BASE_DATE').agg({
                 'DISTINCT_USER_IMPRESSIONS': 'sum',
                 'DISTINCT_USER_CLICKS': 'sum',
                 'CONVERSION_RATE_PCT': 'mean'
             }).reset_index()
             
-            # Calculate clickthrough rate
+            # Calculate clickthrough rate for filtered data
             daily_metrics['CLICKTHROUGH_RATE'] = (daily_metrics['DISTINCT_USER_CLICKS'] / daily_metrics['DISTINCT_USER_IMPRESSIONS'] * 100).round(2)
             
-            # Calculate median clickthrough rate for non-herolane lanes
-            non_herolane_data = st.session_state.filtered_data[st.session_state.filtered_data['LANE_TYPE'] != 'herolane']
+            # Calculate metrics for non-herolane lanes from the original unfiltered data
+            # This ensures these metrics are not affected by the filters
+            non_herolane_data = st.session_state.data[st.session_state.data['LANE_TYPE'] != 'herolane']
             non_herolane_daily = non_herolane_data.groupby('BASE_DATE').agg({
                 'DISTINCT_USER_IMPRESSIONS': 'sum',
-                'DISTINCT_USER_CLICKS': 'sum'
+                'DISTINCT_USER_CLICKS': 'sum',
+                'CONVERSION_RATE_PCT': 'mean'
             }).reset_index()
             
             # Calculate clickthrough rate for non-herolane lanes
             non_herolane_daily['NON_HEROLANE_CTR'] = (non_herolane_daily['DISTINCT_USER_CLICKS'] / non_herolane_daily['DISTINCT_USER_IMPRESSIONS'] * 100).round(2)
             
-            # Merge with main metrics
-            daily_metrics = daily_metrics.merge(
-                non_herolane_daily[['BASE_DATE', 'NON_HEROLANE_CTR']], 
-                on='BASE_DATE', 
-                how='left'
-            )
-            
-            # Calculate median conversion rate for non-herolane lanes
-            non_herolane_data = st.session_state.filtered_data[st.session_state.filtered_data['LANE_TYPE'] != 'herolane']
-            non_herolane_daily_conv = non_herolane_data.groupby('BASE_DATE').agg({
-                'CONVERSION_RATE_PCT': 'mean'
-            }).reset_index()
-            
-            # Rename column
-            non_herolane_daily_conv = non_herolane_daily_conv.rename(columns={'CONVERSION_RATE_PCT': 'NON_HEROLANE_CONV_RATE'})
+            # Rename conversion rate column
+            non_herolane_daily = non_herolane_daily.rename(columns={'CONVERSION_RATE_PCT': 'NON_HEROLANE_CONV_RATE'})
             
             # Merge with main metrics
             daily_metrics = daily_metrics.merge(
-                non_herolane_daily_conv[['BASE_DATE', 'NON_HEROLANE_CONV_RATE']], 
+                non_herolane_daily[['BASE_DATE', 'NON_HEROLANE_CTR', 'NON_HEROLANE_CONV_RATE']], 
                 on='BASE_DATE', 
                 how='left'
             )
@@ -595,6 +584,12 @@ if st.session_state.conn:
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 st.plotly_chart(fig_combined, use_container_width=True)
+                
+            # Add explanation about non-herolane metrics
+            st.info("""
+            **Note:** The non-herolane metrics (orange dashed lines) are calculated from the complete dataset and are not affected by the filters in the sidebar. 
+            This provides a consistent baseline for comparison regardless of the filters applied.
+            """)
         else:
             st.warning("No data available for trend analysis with current filters.")
     else:
