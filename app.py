@@ -141,25 +141,20 @@ def run_analytics_query():
                 playground.dani.standardize_lane_type(list_type, list_name) AS lane_type,
                 case when user_id like 'JNDE%' then 'yes' else 'no' end as is_registered,
             FROM joyn_snow.im.lane_views_f
-            WHERE base_date > dateadd(DAY, -10, CURRENT_DATE)
+            WHERE base_date > dateadd(DAY, -90, CURRENT_DATE)
         ),
         correct_as_f AS (
             SELECT *,
                 playground.dani.standardize_lane_type(lane_type, lane_label) AS rlane_type
             FROM joyn_snow.im.asset_select_f
-            WHERE base_date > dateadd(DAY, -10, CURRENT_DATE)
-        ),
-        filtered_lane_types AS (
-            SELECT *
-            FROM correct_lane_views_f
-            WHERE REGEXP_LIKE(lane_type, '^[A-Za-z]+$') -- Only keep lane types with alphabetical characters
+            WHERE base_date > dateadd(DAY, -90, CURRENT_DATE)
         )
         SELECT 
             a.base_date,a.lane_type,a.is_registered,
             HLL(DISTINCT a.user_id) as distinct_user_impressions,
             HLL(DISTINCT CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) AS distinct_user_clicks,
             ROUND((HLL(CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) / NULLIF(COUNT(DISTINCT a.user_id), 0)) * 100, 2) AS conversion_rate_pct 
-        FROM filtered_lane_types a 
+        FROM correct_lane_views_f a 
         LEFT JOIN correct_as_f b ON 
         (a.user_id = b.user_id and a.user_id like 'JNDE%' and a.lane_type = b.rlane_type AND datediff(day, a.base_date, b.base_date) < 8 and b.base_date >= a.base_date)
         GROUP BY all 
@@ -331,103 +326,6 @@ if st.session_state.conn:
                 st.write(f"**Registration Status:** {', '.join(st.session_state.is_registered_filter)}")
             else:
                 st.write("**Registration Status:** All")
-        
-        # Display trendline graphs
-        st.subheader("Trend Analysis")
-        
-        # Prepare data for trendlines
-        if len(st.session_state.filtered_data) > 0:
-            # Group by date to get daily metrics
-            daily_metrics = st.session_state.filtered_data.groupby('BASE_DATE').agg({
-                'DISTINCT_USER_IMPRESSIONS': 'sum',
-                'DISTINCT_USER_CLICKS': 'sum',
-                'CONVERSION_RATE_PCT': 'mean'
-            }).reset_index()
-            
-            # Create tabs for different metrics
-            tab1, tab2, tab3 = st.tabs(["Impressions & Clicks", "Conversion Rate", "Combined View"])
-            
-            with tab1:
-                # Plot impressions and clicks
-                fig_imp_clicks = go.Figure()
-                fig_imp_clicks.add_trace(go.Scatter(
-                    x=daily_metrics['BASE_DATE'], 
-                    y=daily_metrics['DISTINCT_USER_IMPRESSIONS'],
-                    name='Impressions',
-                    line=dict(color='blue')
-                ))
-                fig_imp_clicks.add_trace(go.Scatter(
-                    x=daily_metrics['BASE_DATE'], 
-                    y=daily_metrics['DISTINCT_USER_CLICKS'],
-                    name='Clicks',
-                    line=dict(color='red')
-                ))
-                fig_imp_clicks.update_layout(
-                    title='Daily Impressions and Clicks Over Time',
-                    xaxis_title='Date',
-                    yaxis_title='Count',
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                st.plotly_chart(fig_imp_clicks, use_container_width=True)
-            
-            with tab2:
-                # Plot conversion rate
-                fig_conv = px.line(
-                    daily_metrics, 
-                    x='BASE_DATE', 
-                    y='CONVERSION_RATE_PCT',
-                    title='Daily Conversion Rate Over Time'
-                )
-                fig_conv.update_layout(
-                    xaxis_title='Date',
-                    yaxis_title='Conversion Rate (%)'
-                )
-                st.plotly_chart(fig_conv, use_container_width=True)
-            
-            with tab3:
-                # Combined view with secondary y-axis
-                fig_combined = go.Figure()
-                
-                # Add impressions trace
-                fig_combined.add_trace(go.Scatter(
-                    x=daily_metrics['BASE_DATE'], 
-                    y=daily_metrics['DISTINCT_USER_IMPRESSIONS'],
-                    name='Impressions',
-                    line=dict(color='blue')
-                ))
-                
-                # Add clicks trace
-                fig_combined.add_trace(go.Scatter(
-                    x=daily_metrics['BASE_DATE'], 
-                    y=daily_metrics['DISTINCT_USER_CLICKS'],
-                    name='Clicks',
-                    line=dict(color='red')
-                ))
-                
-                # Add conversion rate trace with secondary y-axis
-                fig_combined.add_trace(go.Scatter(
-                    x=daily_metrics['BASE_DATE'], 
-                    y=daily_metrics['CONVERSION_RATE_PCT'],
-                    name='Conversion Rate (%)',
-                    line=dict(color='green'),
-                    yaxis='y2'
-                ))
-                
-                # Update layout with secondary y-axis
-                fig_combined.update_layout(
-                    title='Combined Metrics Over Time',
-                    xaxis_title='Date',
-                    yaxis_title='Count',
-                    yaxis2=dict(
-                        title='Conversion Rate (%)',
-                        overlaying='y',
-                        side='right'
-                    ),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                st.plotly_chart(fig_combined, use_container_width=True)
-        else:
-            st.warning("No data available for trend analysis with current filters.")
         
         # Display raw data
         with st.expander("View Raw Data"):
