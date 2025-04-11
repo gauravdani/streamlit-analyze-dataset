@@ -51,6 +51,8 @@ if 'device_platform_filter' not in st.session_state:
     st.session_state.device_platform_filter = []
 if 'date_preset' not in st.session_state:
     st.session_state.date_preset = None
+if 'current_query' not in st.session_state:
+    st.session_state.current_query = None
 
 # Main app
 st.title("❄️ Recommendation Analytics Dashboard")
@@ -148,9 +150,14 @@ def run_analytics_query():
             WHERE base_date > dateadd(DAY, -90, CURRENT_DATE)
         ),
         correct_as_f AS (
-            SELECT *,
+            SELECT user_id,lane_type,base_date,lane_label,event_type,
                 playground.dani.standardize_lane_type(lane_type, lane_label) AS rlane_type
             FROM joyn_snow.im.asset_select_f
+            WHERE base_date > dateadd(DAY, -90, CURRENT_DATE)
+            union all
+            SELECT user_id,lane_type,base_date,lane_label,event_type,
+                playground.dani.standardize_lane_type(lane_type, lane_label) AS rlane_type
+            FROM joyn_snow.im.video_playback_request_f
             WHERE base_date > dateadd(DAY, -90, CURRENT_DATE)
         )
         SELECT 
@@ -164,6 +171,9 @@ def run_analytics_query():
         GROUP BY all 
         order by 1 asc;
         """
+        
+        # Store the query in session state for display
+        st.session_state.current_query = query
         
         cursor.execute(query)
         results = cursor.fetchall()
@@ -408,6 +418,69 @@ if st.session_state.conn:
         st.write(f"Total Records: {len(st.session_state.data)}")
         st.write(f"Filtered Records: {len(st.session_state.filtered_data)}")
         
+        # Display metric definitions
+        with st.expander("Metric Definitions"):
+            st.markdown("""
+            ### Key Metrics Explained
+            
+            #### Conversion Rate
+            **Definition:** The percentage of unique users who clicked on a recommendation after seeing it.
+            
+            **Calculation:** (Number of unique users who clicked / Number of unique users who saw the recommendation) × 100
+            
+            **Interpretation:** A higher conversion rate indicates that a larger proportion of users who see recommendations are engaging with them by clicking. This metric helps identify which recommendation lanes are most effective at driving user engagement.
+            
+            #### Clickthrough Rate (CTR)
+            **Definition:** The percentage of unique users who clicked on a recommendation after seeing it.
+            
+            **Calculation:** (Number of unique users who clicked / Number of unique users who saw the recommendation) × 100
+            
+            **Interpretation:** While mathematically similar to conversion rate, CTR is often used in the context of measuring the effectiveness of recommendation visibility and placement. A higher CTR suggests that the recommendation is more visible or compelling to users.
+            
+            #### Impressions
+            **Definition:** The number of times recommendations are shown to unique users.
+            
+            **Interpretation:** This metric helps understand the reach of your recommendations. Higher impressions indicate broader visibility, but should be analyzed alongside clicks and conversion rates to assess effectiveness.
+            
+            #### Clicks
+            **Definition:** The number of times unique users interact with recommendations by clicking on them.
+            
+            **Interpretation:** This metric measures user engagement with recommendations. Higher clicks relative to impressions indicate more effective recommendations.
+            """)
+        
+        # Display the underlying query
+        with st.expander("View Underlying Query"):
+            st.markdown("""
+            ### SQL Query Explanation
+            
+            This query analyzes user interactions with different recommendation lanes:
+            
+            1. **Data Sources**:
+               - `lane_views_f`: Contains impression data (when users see recommendations)
+               - `asset_select_f` and `video_playback_request_f`: Contain click data (when users interact with recommendations)
+            
+            2. **Key Metrics**:
+               - `distinct_user_impressions`: Unique users who saw recommendations (using HyperLogLog for efficient counting)
+               - `distinct_user_clicks`: Unique users who clicked on recommendations
+               - `conversion_rate_pct`: Percentage of users who clicked after seeing recommendations
+            
+            3. **Time Window**:
+               - The query looks at the last 90 days of data
+               - Clicks are matched to impressions within 8 days of the impression date
+            
+            4. **Lane Standardization**:
+               - Uses a custom function `standardize_lane_type` to normalize lane types across different sources
+            """)
+            
+            st.code(st.session_state.current_query, language="sql")
+            
+            st.markdown("""
+            ### How to Modify the Query
+            
+            If you need to modify this query, you can edit the `run_analytics_query()` function in the `app.py` file.
+            After making changes, you'll need to restart the Streamlit app and reload the data.
+            """)
+        
         # Display filter summary
         with st.expander("Filter Summary"):
             if st.session_state.date_range:
@@ -619,8 +692,154 @@ if st.session_state.conn:
             **Note:** The non-herolane metrics (orange dashed lines) are calculated from the complete dataset and are not affected by the filters in the sidebar. 
             This provides a consistent baseline for comparison regardless of the filters applied.
             """)
-        else:
-            st.warning("No data available for trend analysis with current filters.")
+            
+            # Lane Performance Analysis
+            st.subheader("Lane Performance Analysis")
+            
+            if len(st.session_state.filtered_data) > 0:
+                # Calculate median conversion rate by lane type
+                lane_performance = st.session_state.filtered_data.groupby('LANE_TYPE').agg({
+                    'CONVERSION_RATE_PCT': 'median',
+                    'DISTINCT_USER_IMPRESSIONS': 'sum',
+                    'DISTINCT_USER_CLICKS': 'sum'
+                }).reset_index()
+                
+                # Calculate clickthrough rate for each lane
+                lane_performance['CLICKTHROUGH_RATE'] = (lane_performance['DISTINCT_USER_CLICKS'] / lane_performance['DISTINCT_USER_IMPRESSIONS'] * 100).round(2)
+                
+                # Sort by conversion rate for better visualization
+                lane_performance = lane_performance.sort_values('CONVERSION_RATE_PCT', ascending=False)
+                
+                # Create tabs for different lane performance metrics
+                lane_tab1, lane_tab2 = st.tabs(["Conversion Rate by Lane", "Clickthrough Rate by Lane"])
+                
+                with lane_tab1:
+                    # Plot median conversion rate by lane
+                    fig_lane_conv = go.Figure()
+                    fig_lane_conv.add_trace(go.Bar(
+                        x=lane_performance['LANE_TYPE'],
+                        y=lane_performance['CONVERSION_RATE_PCT'],
+                        text=lane_performance['CONVERSION_RATE_PCT'].round(2),
+                        textposition='auto',
+                        marker_color='green'
+                    ))
+                    
+                    # Add a horizontal line for the overall median
+                    overall_median = lane_performance['CONVERSION_RATE_PCT'].median()
+                    fig_lane_conv.add_shape(
+                        type="line",
+                        x0=-0.5,
+                        y0=overall_median,
+                        x1=len(lane_performance) - 0.5,
+                        y1=overall_median,
+                        line=dict(
+                            color="red",
+                            width=2,
+                            dash="dash",
+                        ),
+                    )
+                    
+                    # Add annotation for the median line
+                    fig_lane_conv.add_annotation(
+                        x=len(lane_performance) - 1,
+                        y=overall_median,
+                        text=f"Median: {overall_median:.2f}%",
+                        showarrow=False,
+                        yshift=10,
+                        font=dict(color="red")
+                    )
+                    
+                    fig_lane_conv.update_layout(
+                        title='Median Conversion Rate by Lane Type',
+                        xaxis_title='Lane Type',
+                        yaxis_title='Conversion Rate (%)',
+                        showlegend=False,
+                        height=500
+                    )
+                    
+                    # Rotate x-axis labels for better readability
+                    fig_lane_conv.update_xaxes(tickangle=45)
+                    
+                    st.plotly_chart(fig_lane_conv, use_container_width=True)
+                    
+                    # Display the data table
+                    st.subheader("Lane Performance Data")
+                    st.dataframe(
+                        lane_performance[['LANE_TYPE', 'CONVERSION_RATE_PCT', 'CLICKTHROUGH_RATE', 'DISTINCT_USER_IMPRESSIONS', 'DISTINCT_USER_CLICKS']]
+                        .rename(columns={
+                            'LANE_TYPE': 'Lane Type',
+                            'CONVERSION_RATE_PCT': 'Median Conversion Rate (%)',
+                            'CLICKTHROUGH_RATE': 'Clickthrough Rate (%)',
+                            'DISTINCT_USER_IMPRESSIONS': 'Total Impressions',
+                            'DISTINCT_USER_CLICKS': 'Total Clicks'
+                        }),
+                        use_container_width=True
+                    )
+                
+                with lane_tab2:
+                    # Plot clickthrough rate by lane
+                    fig_lane_ctr = go.Figure()
+                    fig_lane_ctr.add_trace(go.Bar(
+                        x=lane_performance['LANE_TYPE'],
+                        y=lane_performance['CLICKTHROUGH_RATE'],
+                        text=lane_performance['CLICKTHROUGH_RATE'].round(2),
+                        textposition='auto',
+                        marker_color='purple'
+                    ))
+                    
+                    # Add a horizontal line for the overall median
+                    overall_median_ctr = lane_performance['CLICKTHROUGH_RATE'].median()
+                    fig_lane_ctr.add_shape(
+                        type="line",
+                        x0=-0.5,
+                        y0=overall_median_ctr,
+                        x1=len(lane_performance) - 0.5,
+                        y1=overall_median_ctr,
+                        line=dict(
+                            color="red",
+                            width=2,
+                            dash="dash",
+                        ),
+                    )
+                    
+                    # Add annotation for the median line
+                    fig_lane_ctr.add_annotation(
+                        x=len(lane_performance) - 1,
+                        y=overall_median_ctr,
+                        text=f"Median: {overall_median_ctr:.2f}%",
+                        showarrow=False,
+                        yshift=10,
+                        font=dict(color="red")
+                    )
+                    
+                    fig_lane_ctr.update_layout(
+                        title='Clickthrough Rate by Lane Type',
+                        xaxis_title='Lane Type',
+                        yaxis_title='Clickthrough Rate (%)',
+                        showlegend=False,
+                        height=500
+                    )
+                    
+                    # Rotate x-axis labels for better readability
+                    fig_lane_ctr.update_xaxes(tickangle=45)
+                    
+                    st.plotly_chart(fig_lane_ctr, use_container_width=True)
+                    
+                    # Display the data table
+                    st.subheader("Lane Performance Data")
+                    st.dataframe(
+                        lane_performance[['LANE_TYPE', 'CONVERSION_RATE_PCT', 'CLICKTHROUGH_RATE', 'DISTINCT_USER_IMPRESSIONS', 'DISTINCT_USER_CLICKS']]
+                        .rename(columns={
+                            'LANE_TYPE': 'Lane Type',
+                            'CONVERSION_RATE_PCT': 'Median Conversion Rate (%)',
+                            'CLICKTHROUGH_RATE': 'Clickthrough Rate (%)',
+                            'DISTINCT_USER_IMPRESSIONS': 'Total Impressions',
+                            'DISTINCT_USER_CLICKS': 'Total Clicks'
+                        }),
+                        use_container_width=True
+                    )
+            else:
+                st.warning("No data available for lane performance analysis with current filters.")
     else:
         st.info("👈 Click 'Load Analytics Data' in the sidebar to analyze the dataset.")
 else:

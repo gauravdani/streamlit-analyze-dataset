@@ -67,12 +67,15 @@ Please create a Streamlit application with the following structure:
 6. Filter application functions
 7. UI components (sidebar filters, main content)
 8. Error handling and user feedback
+9. Manage dependencies using poetry.
 
 The application should follow best practices for:
 - Code organization
 - Error handling
 - User experience
 - Performance optimization
+
+Create the files as instructed.
 ```
 
 ## Troubleshooting
