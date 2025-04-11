@@ -47,6 +47,8 @@ if 'lane_type_filter' not in st.session_state:
     st.session_state.lane_type_filter = []
 if 'is_registered_filter' not in st.session_state:
     st.session_state.is_registered_filter = []
+if 'date_preset' not in st.session_state:
+    st.session_state.date_preset = None
 
 # Main app
 st.title("❄️ Snowflake Analytics Dashboard")
@@ -141,25 +143,20 @@ def run_analytics_query():
                 playground.dani.standardize_lane_type(list_type, list_name) AS lane_type,
                 case when user_id like 'JNDE%' then 'yes' else 'no' end as is_registered,
             FROM joyn_snow.im.lane_views_f
-            WHERE base_date > dateadd(DAY, -10, CURRENT_DATE)
+            WHERE base_date > dateadd(DAY, -90, CURRENT_DATE)
         ),
         correct_as_f AS (
             SELECT *,
                 playground.dani.standardize_lane_type(lane_type, lane_label) AS rlane_type
             FROM joyn_snow.im.asset_select_f
-            WHERE base_date > dateadd(DAY, -10, CURRENT_DATE)
-        ),
-        filtered_lane_types AS (
-            SELECT *
-            FROM correct_lane_views_f
-            WHERE REGEXP_LIKE(lane_type, '^[A-Za-z]+$') -- Only keep lane types with alphabetical characters
+            WHERE base_date > dateadd(DAY, -90, CURRENT_DATE)
         )
         SELECT 
             a.base_date,a.lane_type,a.is_registered,
             HLL(DISTINCT a.user_id) as distinct_user_impressions,
             HLL(DISTINCT CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) AS distinct_user_clicks,
             ROUND((HLL(CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) / NULLIF(COUNT(DISTINCT a.user_id), 0)) * 100, 2) AS conversion_rate_pct 
-        FROM filtered_lane_types a 
+        FROM correct_lane_views_f a 
         LEFT JOIN correct_as_f b ON 
         (a.user_id = b.user_id and a.user_id like 'JNDE%' and a.lane_type = b.rlane_type AND datediff(day, a.base_date, b.base_date) < 8 and b.base_date >= a.base_date)
         GROUP BY all 
@@ -215,6 +212,58 @@ def apply_filters():
     st.session_state.filtered_data = filtered_df
     return filtered_df
 
+def apply_date_preset(preset):
+    """Apply a date preset to the date range filter"""
+    if st.session_state.data is None:
+        return
+    
+    today = datetime.now()
+    max_date = st.session_state.data['BASE_DATE'].max()
+    
+    if preset == "Last 7 days":
+        start_date = max_date - timedelta(days=7)
+        end_date = max_date
+    elif preset == "Last 14 days":
+        start_date = max_date - timedelta(days=14)
+        end_date = max_date
+    elif preset == "Last 30 days":
+        start_date = max_date - timedelta(days=30)
+        end_date = max_date
+    elif preset == "Last 90 days":
+        start_date = max_date - timedelta(days=90)
+        end_date = max_date
+    elif preset == "Last 180 days":
+        start_date = max_date - timedelta(days=180)
+        end_date = max_date
+    elif preset == "Last 365 days":
+        start_date = max_date - timedelta(days=365)
+        end_date = max_date
+    elif preset == "This month":
+        start_date = datetime(today.year, today.month, 1)
+        end_date = max_date
+    elif preset == "Last month":
+        if today.month == 1:
+            start_date = datetime(today.year - 1, 12, 1)
+        else:
+            start_date = datetime(today.year, today.month - 1, 1)
+        end_date = datetime(today.year, today.month, 1) - timedelta(days=1)
+    elif preset == "This year":
+        start_date = datetime(today.year, 1, 1)
+        end_date = max_date
+    elif preset == "Last year":
+        start_date = datetime(today.year - 1, 1, 1)
+        end_date = datetime(today.year, 1, 1) - timedelta(days=1)
+    elif preset == "All time":
+        start_date = st.session_state.data['BASE_DATE'].min()
+        end_date = max_date
+    else:
+        return
+    
+    st.session_state.date_range = (start_date, end_date)
+    st.session_state.date_preset = preset
+    apply_filters()
+    st.rerun()
+
 # Connection section
 st.sidebar.header("Snowflake Connection")
 if st.sidebar.button("Connect to Snowflake"):
@@ -230,8 +279,26 @@ if st.sidebar.button("Load Analytics Data"):
 # Filters section
 st.sidebar.header("Filters")
 if st.session_state.data_loaded:
+    # Date presets filter
+    st.sidebar.subheader("Date Presets")
+    date_presets = [
+        "Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", 
+        "Last 180 days", "Last 365 days", "This month", "Last month", 
+        "This year", "Last year", "All time"
+    ]
+    
+    selected_preset = st.sidebar.selectbox(
+        "Select Date Preset",
+        options=["Custom"] + date_presets,
+        index=0 if st.session_state.date_preset is None else date_presets.index(st.session_state.date_preset) + 1,
+        key="date_preset_select"
+    )
+    
+    if selected_preset != "Custom" and selected_preset != st.session_state.date_preset:
+        apply_date_preset(selected_preset)
+    
     # Date range filter
-    st.sidebar.subheader("Date Range")
+    st.sidebar.subheader("Custom Date Range")
     min_date = st.session_state.data['BASE_DATE'].min()
     max_date = st.session_state.data['BASE_DATE'].max()
     
@@ -257,6 +324,7 @@ if st.session_state.data_loaded:
         
         if (start_datetime, end_datetime) != st.session_state.date_range:
             st.session_state.date_range = (start_datetime, end_datetime)
+            st.session_state.date_preset = None  # Reset preset when custom range is selected
             apply_filters()
             st.rerun()
     
@@ -321,6 +389,8 @@ if st.session_state.conn:
             if st.session_state.date_range:
                 start_date, end_date = st.session_state.date_range
                 st.write(f"**Date Range:** {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+                if st.session_state.date_preset:
+                    st.write(f"**Date Preset:** {st.session_state.date_preset}")
             
             if st.session_state.lane_type_filter:
                 st.write(f"**Lane Types:** {', '.join(st.session_state.lane_type_filter)}")
@@ -331,6 +401,10 @@ if st.session_state.conn:
                 st.write(f"**Registration Status:** {', '.join(st.session_state.is_registered_filter)}")
             else:
                 st.write("**Registration Status:** All")
+        
+        # Display raw data
+        with st.expander("View Raw Data"):
+            st.dataframe(st.session_state.filtered_data, use_container_width=True)
         
         # Display trendline graphs
         st.subheader("Trend Analysis")
@@ -344,8 +418,11 @@ if st.session_state.conn:
                 'CONVERSION_RATE_PCT': 'mean'
             }).reset_index()
             
+            # Calculate clickthrough rate
+            daily_metrics['CLICKTHROUGH_RATE'] = (daily_metrics['DISTINCT_USER_CLICKS'] / daily_metrics['DISTINCT_USER_IMPRESSIONS'] * 100).round(2)
+            
             # Create tabs for different metrics
-            tab1, tab2, tab3 = st.tabs(["Impressions & Clicks", "Conversion Rate", "Combined View"])
+            tab1, tab2, tab3, tab4 = st.tabs(["Impressions & Clicks", "Conversion Rate", "Clickthrough Rate", "Combined View"])
             
             with tab1:
                 # Plot impressions and clicks
@@ -385,6 +462,20 @@ if st.session_state.conn:
                 st.plotly_chart(fig_conv, use_container_width=True)
             
             with tab3:
+                # Plot clickthrough rate
+                fig_ctr = px.line(
+                    daily_metrics, 
+                    x='BASE_DATE', 
+                    y='CLICKTHROUGH_RATE',
+                    title='Daily Clickthrough Rate Over Time'
+                )
+                fig_ctr.update_layout(
+                    xaxis_title='Date',
+                    yaxis_title='Clickthrough Rate (%)'
+                )
+                st.plotly_chart(fig_ctr, use_container_width=True)
+            
+            with tab4:
                 # Combined view with secondary y-axis
                 fig_combined = go.Figure()
                 
@@ -413,13 +504,22 @@ if st.session_state.conn:
                     yaxis='y2'
                 ))
                 
+                # Add clickthrough rate trace with secondary y-axis
+                fig_combined.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['CLICKTHROUGH_RATE'],
+                    name='Clickthrough Rate (%)',
+                    line=dict(color='purple'),
+                    yaxis='y2'
+                ))
+                
                 # Update layout with secondary y-axis
                 fig_combined.update_layout(
                     title='Combined Metrics Over Time',
                     xaxis_title='Date',
                     yaxis_title='Count',
                     yaxis2=dict(
-                        title='Conversion Rate (%)',
+                        title='Rate (%)',
                         overlaying='y',
                         side='right'
                     ),
@@ -428,10 +528,6 @@ if st.session_state.conn:
                 st.plotly_chart(fig_combined, use_container_width=True)
         else:
             st.warning("No data available for trend analysis with current filters.")
-        
-        # Display raw data
-        with st.expander("View Raw Data"):
-            st.dataframe(st.session_state.filtered_data, use_container_width=True)
     else:
         st.info("👈 Click 'Load Analytics Data' in the sidebar to analyze the dataset.")
 else:
