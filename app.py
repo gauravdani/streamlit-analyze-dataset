@@ -47,6 +47,8 @@ if 'lane_type_filter' not in st.session_state:
     st.session_state.lane_type_filter = []
 if 'is_registered_filter' not in st.session_state:
     st.session_state.is_registered_filter = []
+if 'date_preset' not in st.session_state:
+    st.session_state.date_preset = None
 
 # Main app
 st.title("❄️ Snowflake Analytics Dashboard")
@@ -210,6 +212,58 @@ def apply_filters():
     st.session_state.filtered_data = filtered_df
     return filtered_df
 
+def apply_date_preset(preset):
+    """Apply a date preset to the date range filter"""
+    if st.session_state.data is None:
+        return
+    
+    today = datetime.now()
+    max_date = st.session_state.data['BASE_DATE'].max()
+    
+    if preset == "Last 7 days":
+        start_date = max_date - timedelta(days=7)
+        end_date = max_date
+    elif preset == "Last 14 days":
+        start_date = max_date - timedelta(days=14)
+        end_date = max_date
+    elif preset == "Last 30 days":
+        start_date = max_date - timedelta(days=30)
+        end_date = max_date
+    elif preset == "Last 90 days":
+        start_date = max_date - timedelta(days=90)
+        end_date = max_date
+    elif preset == "Last 180 days":
+        start_date = max_date - timedelta(days=180)
+        end_date = max_date
+    elif preset == "Last 365 days":
+        start_date = max_date - timedelta(days=365)
+        end_date = max_date
+    elif preset == "This month":
+        start_date = datetime(today.year, today.month, 1)
+        end_date = max_date
+    elif preset == "Last month":
+        if today.month == 1:
+            start_date = datetime(today.year - 1, 12, 1)
+        else:
+            start_date = datetime(today.year, today.month - 1, 1)
+        end_date = datetime(today.year, today.month, 1) - timedelta(days=1)
+    elif preset == "This year":
+        start_date = datetime(today.year, 1, 1)
+        end_date = max_date
+    elif preset == "Last year":
+        start_date = datetime(today.year - 1, 1, 1)
+        end_date = datetime(today.year, 1, 1) - timedelta(days=1)
+    elif preset == "All time":
+        start_date = st.session_state.data['BASE_DATE'].min()
+        end_date = max_date
+    else:
+        return
+    
+    st.session_state.date_range = (start_date, end_date)
+    st.session_state.date_preset = preset
+    apply_filters()
+    st.rerun()
+
 # Connection section
 st.sidebar.header("Snowflake Connection")
 if st.sidebar.button("Connect to Snowflake"):
@@ -225,8 +279,26 @@ if st.sidebar.button("Load Analytics Data"):
 # Filters section
 st.sidebar.header("Filters")
 if st.session_state.data_loaded:
+    # Date presets filter
+    st.sidebar.subheader("Date Presets")
+    date_presets = [
+        "Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", 
+        "Last 180 days", "Last 365 days", "This month", "Last month", 
+        "This year", "Last year", "All time"
+    ]
+    
+    selected_preset = st.sidebar.selectbox(
+        "Select Date Preset",
+        options=["Custom"] + date_presets,
+        index=0 if st.session_state.date_preset is None else date_presets.index(st.session_state.date_preset) + 1,
+        key="date_preset_select"
+    )
+    
+    if selected_preset != "Custom" and selected_preset != st.session_state.date_preset:
+        apply_date_preset(selected_preset)
+    
     # Date range filter
-    st.sidebar.subheader("Date Range")
+    st.sidebar.subheader("Custom Date Range")
     min_date = st.session_state.data['BASE_DATE'].min()
     max_date = st.session_state.data['BASE_DATE'].max()
     
@@ -252,6 +324,7 @@ if st.session_state.data_loaded:
         
         if (start_datetime, end_datetime) != st.session_state.date_range:
             st.session_state.date_range = (start_datetime, end_datetime)
+            st.session_state.date_preset = None  # Reset preset when custom range is selected
             apply_filters()
             st.rerun()
     
@@ -316,6 +389,8 @@ if st.session_state.conn:
             if st.session_state.date_range:
                 start_date, end_date = st.session_state.date_range
                 st.write(f"**Date Range:** {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+                if st.session_state.date_preset:
+                    st.write(f"**Date Preset:** {st.session_state.date_preset}")
             
             if st.session_state.lane_type_filter:
                 st.write(f"**Lane Types:** {', '.join(st.session_state.lane_type_filter)}")
@@ -330,6 +405,129 @@ if st.session_state.conn:
         # Display raw data
         with st.expander("View Raw Data"):
             st.dataframe(st.session_state.filtered_data, use_container_width=True)
+        
+        # Display trendline graphs
+        st.subheader("Trend Analysis")
+        
+        # Prepare data for trendlines
+        if len(st.session_state.filtered_data) > 0:
+            # Group by date to get daily metrics
+            daily_metrics = st.session_state.filtered_data.groupby('BASE_DATE').agg({
+                'DISTINCT_USER_IMPRESSIONS': 'sum',
+                'DISTINCT_USER_CLICKS': 'sum',
+                'CONVERSION_RATE_PCT': 'mean'
+            }).reset_index()
+            
+            # Calculate clickthrough rate
+            daily_metrics['CLICKTHROUGH_RATE'] = (daily_metrics['DISTINCT_USER_CLICKS'] / daily_metrics['DISTINCT_USER_IMPRESSIONS'] * 100).round(2)
+            
+            # Create tabs for different metrics
+            tab1, tab2, tab3, tab4 = st.tabs(["Impressions & Clicks", "Conversion Rate", "Clickthrough Rate", "Combined View"])
+            
+            with tab1:
+                # Plot impressions and clicks
+                fig_imp_clicks = go.Figure()
+                fig_imp_clicks.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['DISTINCT_USER_IMPRESSIONS'],
+                    name='Impressions',
+                    line=dict(color='blue')
+                ))
+                fig_imp_clicks.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['DISTINCT_USER_CLICKS'],
+                    name='Clicks',
+                    line=dict(color='red')
+                ))
+                fig_imp_clicks.update_layout(
+                    title='Daily Impressions and Clicks Over Time',
+                    xaxis_title='Date',
+                    yaxis_title='Count',
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                st.plotly_chart(fig_imp_clicks, use_container_width=True)
+            
+            with tab2:
+                # Plot conversion rate
+                fig_conv = px.line(
+                    daily_metrics, 
+                    x='BASE_DATE', 
+                    y='CONVERSION_RATE_PCT',
+                    title='Daily Conversion Rate Over Time'
+                )
+                fig_conv.update_layout(
+                    xaxis_title='Date',
+                    yaxis_title='Conversion Rate (%)'
+                )
+                st.plotly_chart(fig_conv, use_container_width=True)
+            
+            with tab3:
+                # Plot clickthrough rate
+                fig_ctr = px.line(
+                    daily_metrics, 
+                    x='BASE_DATE', 
+                    y='CLICKTHROUGH_RATE',
+                    title='Daily Clickthrough Rate Over Time'
+                )
+                fig_ctr.update_layout(
+                    xaxis_title='Date',
+                    yaxis_title='Clickthrough Rate (%)'
+                )
+                st.plotly_chart(fig_ctr, use_container_width=True)
+            
+            with tab4:
+                # Combined view with secondary y-axis
+                fig_combined = go.Figure()
+                
+                # Add impressions trace
+                fig_combined.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['DISTINCT_USER_IMPRESSIONS'],
+                    name='Impressions',
+                    line=dict(color='blue')
+                ))
+                
+                # Add clicks trace
+                fig_combined.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['DISTINCT_USER_CLICKS'],
+                    name='Clicks',
+                    line=dict(color='red')
+                ))
+                
+                # Add conversion rate trace with secondary y-axis
+                fig_combined.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['CONVERSION_RATE_PCT'],
+                    name='Conversion Rate (%)',
+                    line=dict(color='green'),
+                    yaxis='y2'
+                ))
+                
+                # Add clickthrough rate trace with secondary y-axis
+                fig_combined.add_trace(go.Scatter(
+                    x=daily_metrics['BASE_DATE'], 
+                    y=daily_metrics['CLICKTHROUGH_RATE'],
+                    name='Clickthrough Rate (%)',
+                    line=dict(color='purple'),
+                    yaxis='y2'
+                ))
+                
+                # Update layout with secondary y-axis
+                fig_combined.update_layout(
+                    title='Combined Metrics Over Time',
+                    xaxis_title='Date',
+                    yaxis_title='Count',
+                    yaxis2=dict(
+                        title='Rate (%)',
+                        overlaying='y',
+                        side='right'
+                    ),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                st.plotly_chart(fig_combined, use_container_width=True)
+        else:
+            st.warning("No data available for trend analysis with current filters.")
     else:
         st.info("👈 Click 'Load Analytics Data' in the sidebar to analyze the dataset.")
 else:
