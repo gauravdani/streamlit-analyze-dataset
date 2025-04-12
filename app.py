@@ -147,18 +147,18 @@ def run_analytics_query():
                 playground.dani.standardize_lane_type(list_type, list_name) AS lane_type,
                 case when user_id like 'JNDE%' then 'yes' else 'no' end as is_registered,
             FROM joyn_snow.im.lane_views_f
-            WHERE base_date > dateadd(DAY, -90, CURRENT_DATE)
+            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
         ),
         correct_as_f AS (
             SELECT user_id,lane_type,base_date,lane_label,event_type,
                 playground.dani.standardize_lane_type(lane_type, lane_label) AS rlane_type
             FROM joyn_snow.im.asset_select_f
-            WHERE base_date > dateadd(DAY, -90, CURRENT_DATE)
+            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
             union all
             SELECT user_id,lane_type,base_date,lane_label,event_type,
                 playground.dani.standardize_lane_type(lane_type, lane_label) AS rlane_type
             FROM joyn_snow.im.video_playback_request_f
-            WHERE base_date > dateadd(DAY, -90, CURRENT_DATE)
+            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
         )
         SELECT 
             a.base_date,a.lane_type,a.is_registered,a.device_platform,
@@ -182,6 +182,14 @@ def run_analytics_query():
         
         # Convert base_date to datetime
         df['BASE_DATE'] = pd.to_datetime(df['BASE_DATE'])
+        
+        # Filter out rows where lane_type contains non-alphabetical characters
+        original_count = len(df)
+        df = df[df['LANE_TYPE'].str.match(r'^[a-zA-Z]+$', na=False)]
+        filtered_count = len(df)
+        
+        if original_count > filtered_count:
+            st.info(f"⚠️ Filtered out {original_count - filtered_count} rows where lane_type contained non-alphabetical characters.")
         
         # Store data in session state
         st.session_state.data = df
@@ -458,7 +466,7 @@ if st.session_state.conn:
                - `conversion_rate_pct`: Percentage of users who clicked after seeing recommendations
             
             3. **Time Window**:
-               - The query looks at the last 90 days of data
+               - The query looks at the last 365 days of data
                - Clicks are matched to impressions within 8 days of the impression date
             
             4. **Lane Standardization**:
@@ -499,6 +507,14 @@ if st.session_state.conn:
         
         # Display raw data
         with st.expander("View Raw Data"):
+            st.markdown("""
+            ### Data Filtering Notes
+            
+            The data has been filtered to remove rows where the lane_type contains non-alphabetical characters.
+            This ensures that only clean, standardized lane types are included in the analysis.
+            
+            If you need to see the complete dataset including non-alphabetical lane types, you can modify the filtering logic in the `run_analytics_query()` function.
+            """)
             st.dataframe(st.session_state.filtered_data, use_container_width=True)
         
         # Display trendline graphs
@@ -535,21 +551,148 @@ if st.session_state.conn:
             # Create tabs for different metrics
             tab1, tab2, tab3, tab4 = st.tabs(["Impressions & Clicks", "Conversion Rate", "Combined View", "Lane Type Comparison"])
             
+            # Add year-over-year comparison toggle
+            show_yoy = st.checkbox("Show Year-over-Year Comparison", value=False)
+            
+            # Calculate year-over-year data if enabled
+            if show_yoy:
+                # Create a copy of the data for YoY comparison
+                yoy_metrics = daily_metrics.copy()
+                
+                # Get the current date range
+                current_start_date = daily_metrics['BASE_DATE'].min()
+                current_end_date = daily_metrics['BASE_DATE'].max()
+                
+                # Calculate the previous year's date range
+                prev_year_start = current_start_date - pd.DateOffset(years=1)
+                prev_year_end = current_end_date - pd.DateOffset(years=1)
+                
+                # Filter the data to get only the previous year's data for the same period
+                prev_year_data = st.session_state.data.copy()
+                prev_year_data = prev_year_data[
+                    (prev_year_data['BASE_DATE'] >= prev_year_start) & 
+                    (prev_year_data['BASE_DATE'] <= prev_year_end)
+                ]
+                
+                # Group by date to get daily metrics for previous year
+                prev_year_daily = prev_year_data.groupby('BASE_DATE').agg({
+                    'DISTINCT_USER_IMPRESSIONS': 'sum',
+                    'DISTINCT_USER_CLICKS': 'sum',
+                    'CONVERSION_RATE_PCT': 'mean'
+                }).reset_index()
+                
+                # Calculate metrics for non-herolane lanes from the previous year data
+                prev_year_non_herolane = prev_year_data[prev_year_data['LANE_TYPE'] != 'herolane']
+                prev_year_non_herolane_daily = prev_year_non_herolane.groupby('BASE_DATE').agg({
+                    'CONVERSION_RATE_PCT': 'mean'
+                }).reset_index()
+                
+                # Rename conversion rate column
+                prev_year_non_herolane_daily = prev_year_non_herolane_daily.rename(columns={'CONVERSION_RATE_PCT': 'NON_HEROLANE_CONV_RATE'})
+                
+                # Merge with main metrics
+                prev_year_daily = prev_year_daily.merge(
+                    prev_year_non_herolane_daily[['BASE_DATE', 'NON_HEROLANE_CONV_RATE']], 
+                    on='BASE_DATE', 
+                    how='left'
+                )
+                
+                # Shift dates forward by a year to align with current year for plotting
+                prev_year_daily['BASE_DATE'] = prev_year_daily['BASE_DATE'] + pd.DateOffset(years=1)
+                
+                # Rename columns for clarity
+                prev_year_daily = prev_year_daily.rename(columns={
+                    'DISTINCT_USER_IMPRESSIONS': 'YOY_IMPRESSIONS',
+                    'DISTINCT_USER_CLICKS': 'YOY_CLICKS',
+                    'CONVERSION_RATE_PCT': 'YOY_CONVERSION_RATE',
+                    'NON_HEROLANE_CONV_RATE': 'YOY_NON_HEROLANE_CONV_RATE'
+                })
+                
+                # Store for use in plots
+                yoy_metrics = prev_year_daily
+                
+                # Calculate percentage changes for summary
+                current_impressions = daily_metrics['DISTINCT_USER_IMPRESSIONS'].sum()
+                prev_impressions = prev_year_daily['YOY_IMPRESSIONS'].sum()
+                impressions_pct_change = ((current_impressions - prev_impressions) / prev_impressions * 100) if prev_impressions > 0 else 0
+                
+                current_clicks = daily_metrics['DISTINCT_USER_CLICKS'].sum()
+                prev_clicks = prev_year_daily['YOY_CLICKS'].sum()
+                clicks_pct_change = ((current_clicks - prev_clicks) / prev_clicks * 100) if prev_clicks > 0 else 0
+                
+                current_conv_rate = daily_metrics['CONVERSION_RATE_PCT'].mean()
+                prev_conv_rate = prev_year_daily['YOY_CONVERSION_RATE'].mean()
+                conv_rate_pct_change = ((current_conv_rate - prev_conv_rate) / prev_conv_rate * 100) if prev_conv_rate > 0 else 0
+                
+                current_non_herolane_conv = daily_metrics['NON_HEROLANE_CONV_RATE'].mean()
+                prev_non_herolane_conv = prev_year_daily['YOY_NON_HEROLANE_CONV_RATE'].mean()
+                non_herolane_conv_pct_change = ((current_non_herolane_conv - prev_non_herolane_conv) / prev_non_herolane_conv * 100) if prev_non_herolane_conv > 0 else 0
+                
+                # Display YoY summary
+                st.subheader("Year-over-Year Comparison Summary")
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        "Impressions YoY Change", 
+                        f"{impressions_pct_change:.1f}%",
+                        delta_color="normal" if impressions_pct_change >= 0 else "inverse"
+                    )
+                
+                with col2:
+                    st.metric(
+                        "Clicks YoY Change", 
+                        f"{clicks_pct_change:.1f}%",
+                        delta_color="normal" if clicks_pct_change >= 0 else "inverse"
+                    )
+                
+                with col3:
+                    st.metric(
+                        "Conversion Rate YoY Change", 
+                        f"{conv_rate_pct_change:.1f}%",
+                        delta_color="normal" if conv_rate_pct_change >= 0 else "inverse"
+                    )
+                
+                with col4:
+                    st.metric(
+                        "Non-Herolane Conv Rate YoY Change", 
+                        f"{non_herolane_conv_pct_change:.1f}%",
+                        delta_color="normal" if non_herolane_conv_pct_change >= 0 else "inverse"
+                    )
+            
             with tab1:
                 # Plot impressions and clicks
                 fig_imp_clicks = go.Figure()
+                
+                # Current year data
                 fig_imp_clicks.add_trace(go.Scatter(
                     x=daily_metrics['BASE_DATE'], 
                     y=daily_metrics['DISTINCT_USER_IMPRESSIONS'],
-                    name='Impressions',
+                    name='Current Year Impressions',
                     line=dict(color='blue')
                 ))
                 fig_imp_clicks.add_trace(go.Scatter(
                     x=daily_metrics['BASE_DATE'], 
                     y=daily_metrics['DISTINCT_USER_CLICKS'],
-                    name='Clicks',
+                    name='Current Year Clicks',
                     line=dict(color='red')
                 ))
+                
+                # Add YoY comparison if enabled
+                if show_yoy:
+                    fig_imp_clicks.add_trace(go.Scatter(
+                        x=yoy_metrics['BASE_DATE'], 
+                        y=yoy_metrics['YOY_IMPRESSIONS'],
+                        name='Previous Year Impressions',
+                        line=dict(color='blue', dash='dash')
+                    ))
+                    fig_imp_clicks.add_trace(go.Scatter(
+                        x=yoy_metrics['BASE_DATE'], 
+                        y=yoy_metrics['YOY_CLICKS'],
+                        name='Previous Year Clicks',
+                        line=dict(color='red', dash='dash')
+                    ))
+                
                 fig_imp_clicks.update_layout(
                     title='Daily Impressions and Clicks Over Time',
                     xaxis_title='Date',
@@ -561,18 +704,36 @@ if st.session_state.conn:
             with tab2:
                 # Plot conversion rate
                 fig_conv = go.Figure()
+                
+                # Current year data
                 fig_conv.add_trace(go.Scatter(
                     x=daily_metrics['BASE_DATE'], 
                     y=daily_metrics['CONVERSION_RATE_PCT'],
-                    name='Overall Conversion Rate',
+                    name='Current Year Overall Conversion Rate',
                     line=dict(color='green')
                 ))
                 fig_conv.add_trace(go.Scatter(
                     x=daily_metrics['BASE_DATE'], 
                     y=daily_metrics['NON_HEROLANE_CONV_RATE'],
-                    name='Non-Herolane Median Conversion Rate',
+                    name='Current Year Non-Herolane Median Conversion Rate',
                     line=dict(color='orange', dash='dash')
                 ))
+                
+                # Add YoY comparison if enabled
+                if show_yoy:
+                    fig_conv.add_trace(go.Scatter(
+                        x=yoy_metrics['BASE_DATE'], 
+                        y=yoy_metrics['YOY_CONVERSION_RATE'],
+                        name='Previous Year Overall Conversion Rate',
+                        line=dict(color='green', dash='dot')
+                    ))
+                    fig_conv.add_trace(go.Scatter(
+                        x=yoy_metrics['BASE_DATE'], 
+                        y=yoy_metrics['YOY_NON_HEROLANE_CONV_RATE'],
+                        name='Previous Year Non-Herolane Median Conversion Rate',
+                        line=dict(color='orange', dash='dot')
+                    ))
+                
                 fig_conv.update_layout(
                     title='Daily Conversion Rate Over Time',
                     xaxis_title='Date',
@@ -585,39 +746,62 @@ if st.session_state.conn:
                 # Combined view with secondary y-axis
                 fig_combined = go.Figure()
                 
-                # Add impressions trace
+                # Current year data
                 fig_combined.add_trace(go.Scatter(
                     x=daily_metrics['BASE_DATE'], 
                     y=daily_metrics['DISTINCT_USER_IMPRESSIONS'],
-                    name='Impressions',
+                    name='Current Year Impressions',
                     line=dict(color='blue')
                 ))
-                
-                # Add clicks trace
                 fig_combined.add_trace(go.Scatter(
                     x=daily_metrics['BASE_DATE'], 
                     y=daily_metrics['DISTINCT_USER_CLICKS'],
-                    name='Clicks',
+                    name='Current Year Clicks',
                     line=dict(color='red')
                 ))
-                
-                # Add conversion rate trace with secondary y-axis
                 fig_combined.add_trace(go.Scatter(
                     x=daily_metrics['BASE_DATE'], 
                     y=daily_metrics['CONVERSION_RATE_PCT'],
-                    name='Conversion Rate (%)',
+                    name='Current Year Conversion Rate (%)',
                     line=dict(color='green'),
                     yaxis='y2'
                 ))
-                
-                # Add non-herolane conversion rate trace
                 fig_combined.add_trace(go.Scatter(
                     x=daily_metrics['BASE_DATE'], 
                     y=daily_metrics['NON_HEROLANE_CONV_RATE'],
-                    name='Non-Herolane Conv Rate (%)',
+                    name='Current Year Non-Herolane Conv Rate (%)',
                     line=dict(color='orange', dash='dash'),
                     yaxis='y2'
                 ))
+                
+                # Add YoY comparison if enabled
+                if show_yoy:
+                    fig_combined.add_trace(go.Scatter(
+                        x=yoy_metrics['BASE_DATE'], 
+                        y=yoy_metrics['YOY_IMPRESSIONS'],
+                        name='Previous Year Impressions',
+                        line=dict(color='blue', dash='dot')
+                    ))
+                    fig_combined.add_trace(go.Scatter(
+                        x=yoy_metrics['BASE_DATE'], 
+                        y=yoy_metrics['YOY_CLICKS'],
+                        name='Previous Year Clicks',
+                        line=dict(color='red', dash='dot')
+                    ))
+                    fig_combined.add_trace(go.Scatter(
+                        x=yoy_metrics['BASE_DATE'], 
+                        y=yoy_metrics['YOY_CONVERSION_RATE'],
+                        name='Previous Year Conversion Rate (%)',
+                        line=dict(color='green', dash='dot'),
+                        yaxis='y2'
+                    ))
+                    fig_combined.add_trace(go.Scatter(
+                        x=yoy_metrics['BASE_DATE'], 
+                        y=yoy_metrics['YOY_NON_HEROLANE_CONV_RATE'],
+                        name='Previous Year Non-Herolane Conv Rate (%)',
+                        line=dict(color='orange', dash='dot'),
+                        yaxis='y2'
+                    ))
                 
                 # Update layout with secondary y-axis
                 fig_combined.update_layout(
@@ -661,6 +845,29 @@ if st.session_state.conn:
                             mode='lines+markers'
                         ))
                     
+                    # Add YoY comparison if enabled
+                    if show_yoy:
+                        # Calculate previous year's data for lane types
+                        prev_year_lane_data = prev_year_data.copy()
+                        prev_year_lane_daily = prev_year_lane_data.groupby(['BASE_DATE', 'LANE_TYPE']).agg({
+                            'CONVERSION_RATE_PCT': 'mean'
+                        }).reset_index()
+                        
+                        # Shift dates forward by a year to align with current year for plotting
+                        prev_year_lane_daily['BASE_DATE'] = prev_year_lane_daily['BASE_DATE'] + pd.DateOffset(years=1)
+                        
+                        # Add a trace for each lane type in the previous year data
+                        for lane_type in unique_lane_types:
+                            prev_lane_data = prev_year_lane_daily[prev_year_lane_daily['LANE_TYPE'] == lane_type]
+                            if not prev_lane_data.empty:
+                                fig_lane_types.add_trace(go.Scatter(
+                                    x=prev_lane_data['BASE_DATE'],
+                                    y=prev_lane_data['CONVERSION_RATE_PCT'],
+                                    name=f"{lane_type} (Previous Year)",
+                                    mode='lines+markers',
+                                    line=dict(dash='dash')
+                                ))
+                    
                     # Update layout
                     fig_lane_types.update_layout(
                         title='Lane Type Conversion Rates Over Time',
@@ -699,6 +906,30 @@ if st.session_state.conn:
                     
                     # Rename columns for display
                     lane_stats = lane_stats.rename(columns={'LANE_TYPE': 'Lane Type'})
+                    
+                    # Add YoY comparison to statistics if enabled
+                    if show_yoy:
+                        # Calculate statistics for previous year's lane types
+                        prev_year_lane_stats = prev_year_lane_daily.groupby('LANE_TYPE').agg({
+                            'CONVERSION_RATE_PCT': ['mean', 'median']
+                        }).round(2)
+                        
+                        # Flatten the multi-index columns
+                        prev_year_lane_stats.columns = ['Prev Year Mean', 'Prev Year Median']
+                        prev_year_lane_stats = prev_year_lane_stats.reset_index()
+                        
+                        # Rename columns for display
+                        prev_year_lane_stats = prev_year_lane_stats.rename(columns={'LANE_TYPE': 'Lane Type'})
+                        
+                        # Merge with current year statistics
+                        lane_stats = lane_stats.merge(prev_year_lane_stats, on='Lane Type', how='left')
+                        
+                        # Calculate YoY change
+                        lane_stats['Mean YoY Change'] = ((lane_stats['Mean'] - lane_stats['Prev Year Mean']) / lane_stats['Prev Year Mean'] * 100).round(1)
+                        lane_stats['Median YoY Change'] = ((lane_stats['Median'] - lane_stats['Prev Year Median']) / lane_stats['Prev Year Median'] * 100).round(1)
+                        
+                        # Reorder columns
+                        lane_stats = lane_stats[['Lane Type', 'Mean', 'Median', 'Mean YoY Change', 'Median YoY Change', 'Std Dev', 'Min', 'Max']]
                     
                     # Display the statistics table
                     st.dataframe(
