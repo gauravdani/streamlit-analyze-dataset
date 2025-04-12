@@ -533,7 +533,7 @@ if st.session_state.conn:
             )
             
             # Create tabs for different metrics
-            tab1, tab2, tab3 = st.tabs(["Impressions & Clicks", "Conversion Rate", "Combined View"])
+            tab1, tab2, tab3, tab4 = st.tabs(["Impressions & Clicks", "Conversion Rate", "Combined View", "Lane Type Comparison"])
             
             with tab1:
                 # Plot impressions and clicks
@@ -633,6 +633,74 @@ if st.session_state.conn:
                 )
                 st.plotly_chart(fig_combined, use_container_width=True)
                 
+            with tab4:
+                # Calculate daily conversion rates by lane type
+                lane_type_daily = st.session_state.filtered_data.groupby(['BASE_DATE', 'LANE_TYPE']).agg({
+                    'CONVERSION_RATE_PCT': 'mean'
+                }).reset_index()
+                
+                # Create a figure for lane type comparison
+                fig_lane_types = go.Figure()
+                
+                # Get unique lane types and sort them
+                unique_lane_types = sorted(lane_type_daily['LANE_TYPE'].unique())
+                
+                # Add a trace for each lane type
+                for lane_type in unique_lane_types:
+                    lane_data = lane_type_daily[lane_type_daily['LANE_TYPE'] == lane_type]
+                    fig_lane_types.add_trace(go.Scatter(
+                        x=lane_data['BASE_DATE'],
+                        y=lane_data['CONVERSION_RATE_PCT'],
+                        name=lane_type,
+                        mode='lines+markers'
+                    ))
+                
+                # Update layout
+                fig_lane_types.update_layout(
+                    title='Lane Type Conversion Rates Over Time',
+                    xaxis_title='Date',
+                    yaxis_title='Conversion Rate (%)',
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    ),
+                    height=600
+                )
+                
+                st.plotly_chart(fig_lane_types, use_container_width=True)
+                
+                # Add explanation about the graph
+                st.info("""
+                **Note:** This graph shows the conversion rates for different lane types over time. 
+                The data is filtered by date range, platform, and registration status, but not by lane type,
+                allowing you to compare conversion rates across all lane types.
+                """)
+                
+                # Add statistics for each lane type
+                st.subheader("Lane Type Statistics")
+                
+                # Calculate statistics for each lane type
+                lane_stats = lane_type_daily.groupby('LANE_TYPE').agg({
+                    'CONVERSION_RATE_PCT': ['mean', 'median', 'std', 'min', 'max']
+                }).round(2)
+                
+                # Flatten the multi-index columns
+                lane_stats.columns = ['Mean', 'Median', 'Std Dev', 'Min', 'Max']
+                lane_stats = lane_stats.reset_index()
+                
+                # Rename columns for display
+                lane_stats = lane_stats.rename(columns={'LANE_TYPE': 'Lane Type'})
+                
+                # Display the statistics table
+                st.dataframe(
+                    lane_stats,
+                    use_container_width=True,
+                    hide_index=True
+                )
+            
             # Add explanation about non-herolane metrics
             st.info("""
             **Note:** The non-herolane metrics (orange dashed lines) are calculated from the complete dataset and are not affected by the filters in the sidebar. 
