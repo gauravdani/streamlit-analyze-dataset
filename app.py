@@ -635,71 +635,92 @@ if st.session_state.conn:
                 
             with tab4:
                 # Calculate daily conversion rates by lane type
-                lane_type_daily = st.session_state.filtered_data.groupby(['BASE_DATE', 'LANE_TYPE']).agg({
+                # Start with the filtered data that has all global filters applied
+                filtered_data_for_comparison = st.session_state.filtered_data.copy()
+                
+                # Calculate daily conversion rates by lane type
+                lane_type_daily = filtered_data_for_comparison.groupby(['BASE_DATE', 'LANE_TYPE']).agg({
                     'CONVERSION_RATE_PCT': 'mean'
                 }).reset_index()
-                
-                # Create a figure for lane type comparison
-                fig_lane_types = go.Figure()
                 
                 # Get unique lane types and sort them
                 unique_lane_types = sorted(lane_type_daily['LANE_TYPE'].unique())
                 
-                # Add a trace for each lane type
-                for lane_type in unique_lane_types:
-                    lane_data = lane_type_daily[lane_type_daily['LANE_TYPE'] == lane_type]
-                    fig_lane_types.add_trace(go.Scatter(
-                        x=lane_data['BASE_DATE'],
-                        y=lane_data['CONVERSION_RATE_PCT'],
-                        name=lane_type,
-                        mode='lines+markers'
-                    ))
-                
-                # Update layout
-                fig_lane_types.update_layout(
-                    title='Lane Type Conversion Rates Over Time',
-                    xaxis_title='Date',
-                    yaxis_title='Conversion Rate (%)',
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=1.02,
-                        xanchor="right",
-                        x=1
-                    ),
-                    height=600
-                )
-                
-                st.plotly_chart(fig_lane_types, use_container_width=True)
-                
-                # Add explanation about the graph
-                st.info("""
-                **Note:** This graph shows the conversion rates for different lane types over time. 
-                The data is filtered by date range, platform, and registration status, but not by lane type,
-                allowing you to compare conversion rates across all lane types.
-                """)
-                
-                # Add statistics for each lane type
-                st.subheader("Lane Type Statistics")
-                
-                # Calculate statistics for each lane type
-                lane_stats = lane_type_daily.groupby('LANE_TYPE').agg({
-                    'CONVERSION_RATE_PCT': ['mean', 'median', 'std', 'min', 'max']
-                }).round(2)
-                
-                # Flatten the multi-index columns
-                lane_stats.columns = ['Mean', 'Median', 'Std Dev', 'Min', 'Max']
-                lane_stats = lane_stats.reset_index()
-                
-                # Rename columns for display
-                lane_stats = lane_stats.rename(columns={'LANE_TYPE': 'Lane Type'})
-                
-                # Display the statistics table
-                st.dataframe(
-                    lane_stats,
-                    use_container_width=True,
-                    hide_index=True
-                )
+                # Check if any lane types are selected in the global filter
+                if st.session_state.lane_type_filter and len(st.session_state.lane_type_filter) > 0:
+                    # Create a figure for lane type comparison
+                    fig_lane_types = go.Figure()
+                    
+                    # Add a trace for each lane type in the filtered data
+                    for lane_type in unique_lane_types:
+                        lane_data = lane_type_daily[lane_type_daily['LANE_TYPE'] == lane_type]
+                        fig_lane_types.add_trace(go.Scatter(
+                            x=lane_data['BASE_DATE'],
+                            y=lane_data['CONVERSION_RATE_PCT'],
+                            name=lane_type,
+                            mode='lines+markers'
+                        ))
+                    
+                    # Update layout
+                    fig_lane_types.update_layout(
+                        title='Lane Type Conversion Rates Over Time',
+                        xaxis_title='Date',
+                        yaxis_title='Conversion Rate (%)',
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1
+                        ),
+                        height=600
+                    )
+                    
+                    st.plotly_chart(fig_lane_types, use_container_width=True)
+                    
+                    # Add explanation about the graph
+                    st.info("""
+                    **Note:** This graph shows the conversion rates for lane types over time. 
+                    The data is filtered by all global filters including the lane type filter.
+                    To compare different lane types, use the lane type filter in the sidebar.
+                    """)
+                    
+                    # Add statistics for lane types
+                    st.subheader("Lane Type Statistics")
+                    
+                    # Calculate statistics for lane types
+                    lane_stats = lane_type_daily.groupby('LANE_TYPE').agg({
+                        'CONVERSION_RATE_PCT': ['mean', 'median', 'std', 'min', 'max']
+                    }).round(2)
+                    
+                    # Flatten the multi-index columns
+                    lane_stats.columns = ['Mean', 'Median', 'Std Dev', 'Min', 'Max']
+                    lane_stats = lane_stats.reset_index()
+                    
+                    # Rename columns for display
+                    lane_stats = lane_stats.rename(columns={'LANE_TYPE': 'Lane Type'})
+                    
+                    # Display the statistics table
+                    st.dataframe(
+                        lane_stats,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    # Show a message encouraging users to select lane types
+                    st.info("""
+                    ## Select Lane Types to Compare
+                    
+                    Please select at least one lane type in the global lane type filter in the sidebar to see the comparison graph.
+                    
+                    This will help you focus on specific lane types you're interested in rather than showing all lane types at once.
+                    """)
+                    
+                    # Show a placeholder for the graph
+                    st.empty()
+                    
+                    # Show a placeholder for the statistics
+                    st.empty()
             
             # Add explanation about non-herolane metrics
             st.info("""
@@ -836,18 +857,40 @@ if st.session_state.conn:
             fig_lane_conv.add_annotation(
                 x=len(lane_performance) - 1,
                 y=overall_median,
-                text=f"Median: {overall_median:.2f}%",
+                text=f"Overall Median: {overall_median:.2f}%",
                 showarrow=False,
                 yshift=10,
-                font=dict(color="red")
+                font=dict(color="red", size=12, weight="bold")
             )
             
+            # Add a second annotation at the beginning of the line for better visibility
+            fig_lane_conv.add_annotation(
+                x=0,
+                y=overall_median,
+                text=f"Overall Median: {overall_median:.2f}%",
+                showarrow=False,
+                yshift=10,
+                font=dict(color="red", size=12, weight="bold")
+            )
+            
+            # Add a title to the graph that explains the median line
             fig_lane_conv.update_layout(
                 title='Median Conversion Rate by Lane Type',
                 xaxis_title='Lane Type',
                 yaxis_title='Conversion Rate (%)',
                 showlegend=False,
-                height=500
+                height=500,
+                annotations=[
+                    dict(
+                        x=0.5,
+                        y=1.05,
+                        xref="paper",
+                        yref="paper",
+                        text=f"<b>Red dashed line</b> represents the overall median conversion rate ({overall_median:.2f}%) across all lane types",
+                        showarrow=False,
+                        font=dict(size=12)
+                    )
+                ]
             )
             
             # Rotate x-axis labels for better readability
