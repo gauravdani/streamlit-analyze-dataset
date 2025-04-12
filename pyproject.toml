@@ -13,6 +13,7 @@ snowflake-connector-python = "^3.7.0"
 pandas = "^2.2.1"
 python-dotenv = "^1.0.1"
 plotly = "^5.18.0"
+duckdb = "^1.2.2"
 
 [build-system]
 requires = ["poetry-core"]
