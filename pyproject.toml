@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A Streamlit application that connects to Snowflake using SSO authentication and runs analytics queries"
 authors = ["Your Name <your.email@example.com>"]
 readme = "README.md"
+package-mode = false
 
 [tool.poetry.dependencies]
 python = ">=3.9,<3.9.7 || >3.9.7,<4.0"
