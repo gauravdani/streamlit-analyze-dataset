@@ -116,6 +116,17 @@ def initialize_session_state():
         st.session_state.date_preset = None
     if 'current_query' not in st.session_state:
         st.session_state.current_query = None
+    # Add precision metrics filter states
+    if 'precision_metrics_date_range' not in st.session_state:
+        st.session_state.precision_metrics_date_range = None
+    if 'precision_metrics_registration' not in st.session_state:
+        st.session_state.precision_metrics_registration = []
+    if 'precision_metrics_watched' not in st.session_state:
+        st.session_state.precision_metrics_watched = []
+    if 'update_precision_metrics_display' not in st.session_state:
+        st.session_state.update_precision_metrics_display = False
+    if 'just_loaded_metrics' not in st.session_state:
+        st.session_state.just_loaded_metrics = False
 
 # Initialize session state at the start
 initialize_session_state()
@@ -352,7 +363,7 @@ def apply_date_preset(preset):
     st.rerun()
 
 # Add this new function for precision metrics with its own date handling
-def run_precision_metrics_query(date_range=None):
+def run_precision_metrics_query():
     """Execute the precision metrics query with optional date filtering"""
     try:
         if not st.session_state.conn:
@@ -364,7 +375,7 @@ def run_precision_metrics_query(date_range=None):
         cursor = st.session_state.conn.cursor()
         cursor.execute(f"USE WAREHOUSE {warehouse}")
         
-        # Base query with date range parameter
+        # Base query without date filter
         query = """
         WITH recent_lane_views AS (
             SELECT
@@ -375,14 +386,13 @@ def run_precision_metrics_query(date_range=None):
                 CAST(GET_PATH(flattened.value, 'asset_id') AS TEXT) AS asset_id
             FROM joyn_snow.im.lane_views_f AS lvf,
                  LATERAL FLATTEN(INPUT => lvf.asset_list) AS flattened
-            WHERE lvf.base_date > DATEADD(DAY, -90, CURRENT_DATE)
+            WHERE lvf.base_date > DATEADD(DAY, -120, CURRENT_DATE)
               AND playground.dani.standardize_lane_type(lvf.list_type, lvf.list_name) IN (
                   'recoforyoulane',
                   'becauseyouwatchedlane',
                   'becauseyouwatchedlanediscovery'
               )
               and lvf.base_date < DATEADD(DAY, -7, CURRENT_DATE)
-            {date_filter}
         ),
         watched_videos as (
             SELECT
@@ -405,7 +415,7 @@ def run_precision_metrics_query(date_range=None):
                 AND (v.tvshow_asset_id = r.asset_id OR v.asset_id = r.asset_id)
                 AND v.base_date > r.base_date
                 AND DATEDIFF(DAY, r.base_date, v.base_date) < 8
-                and v.base_date > dateadd(day,-90,current_date) 
+                and v.base_date > dateadd(day,-120,current_date) 
                 and v.content_type = 'VOD'
             GROUP BY r.user_id, r.base_date, r.device_platform
         )
@@ -420,105 +430,328 @@ def run_precision_metrics_query(date_range=None):
         order by 1 asc
         """
         
-        # Add date filter if provided
-        date_filter = ""
-        if date_range and len(date_range) == 2:
-            date_filter = f"AND lvf.base_date BETWEEN '{date_range[0]}' AND '{date_range[1]}'"
-        
-        # Format query with date filter
-        query = query.format(date_filter=date_filter)
-        
         cursor.execute(query)
         columns = [desc[0] for desc in cursor.description]
         results = cursor.fetchall()
-        return pd.DataFrame(results, columns=columns)
+        df = pd.DataFrame(results, columns=columns)
+        
+        # Convert BASE_DATE to datetime if it's not already
+        if not pd.api.types.is_datetime64_any_dtype(df['BASE_DATE']):
+            df['BASE_DATE'] = pd.to_datetime(df['BASE_DATE'])
+        
+        # Store the full dataset in session state
+        st.session_state.metrics_data = df
+        
+        # Set a flag to indicate we just loaded metrics
+        st.session_state.just_loaded_metrics = True
+        
+        return df
         
     except Exception as e:
         st.error(f"❌ Error executing precision metrics query: {str(e)}")
         return None
 
+def apply_precision_metrics_filters(df):
+    """Apply filters to the metrics data"""
+    if df is not None:
+        filtered_df = df.copy()
+        
+        # Apply date filter
+        if st.session_state.precision_metrics_date_range and len(st.session_state.precision_metrics_date_range) == 2:
+            start_date, end_date = st.session_state.precision_metrics_date_range
+            # Convert to datetime if they're date objects
+            if hasattr(start_date, 'date') and not hasattr(start_date, 'time'):
+                start_date = datetime.combine(start_date, datetime.min.time())
+            if hasattr(end_date, 'date') and not hasattr(end_date, 'time'):
+                end_date = datetime.combine(end_date, datetime.max.time())
+                
+            filtered_df = filtered_df[
+                (filtered_df['BASE_DATE'].dt.date >= start_date) &
+                (filtered_df['BASE_DATE'].dt.date <= end_date)
+            ]
+        
+        # Apply registration filter
+        if st.session_state.precision_metrics_registration:
+            filtered_df = filtered_df[filtered_df['IS_REGISTERED'].isin(st.session_state.precision_metrics_registration)]
+        
+        # Apply watched filter
+        if st.session_state.precision_metrics_watched:
+            filtered_df = filtered_df[filtered_df['WATCHED_ANY_RECOMMENDED'].isin(st.session_state.precision_metrics_watched)]
+        
+        return filtered_df
+    return None
+
 def display_precision_metrics(df):
     """Display precision metrics visualizations"""
     if df is not None:
-        # Overall metrics
-        st.subheader("Overall Metrics")
-        col1, col2, col3 = st.columns(3)
+        # Create a container for metrics
+        metrics_container = st.container()
         
-        with col1:
-            median_ratio = df['MEDIAN_RECOMMENDATION_WATCH_RATIO'].mean()
-            st.metric("Median Watch Ratio", f"{median_ratio:.2%}")
+        # Calculate metrics
+        median_ratio = df['MEDIAN_RECOMMENDATION_WATCH_RATIO'].mean()
+        total_users = df['TOTAL_USERS'].sum()
+        
+        # Calculate watched users from the original unfiltered data
+        # This ensures it's not affected by the watch status filter
+        if st.session_state.metrics_data is not None:
+            # Apply only date and registration filters to get the total watched users
+            unfiltered_df = st.session_state.metrics_data.copy()
             
-        with col2:
-            total_users = df['TOTAL_USERS'].sum()
+            # Apply date filter if it exists
+            if st.session_state.precision_metrics_date_range and len(st.session_state.precision_metrics_date_range) == 2:
+                start_date, end_date = st.session_state.precision_metrics_date_range
+                # Convert to datetime if they're date objects
+                if hasattr(start_date, 'date') and not hasattr(start_date, 'time'):
+                    start_date = datetime.combine(start_date, datetime.min.time())
+                if hasattr(end_date, 'date') and not hasattr(end_date, 'time'):
+                    end_date = datetime.combine(end_date, datetime.max.time())
+                    
+                unfiltered_df = unfiltered_df[
+                    (unfiltered_df['BASE_DATE'].dt.date >= start_date) &
+                    (unfiltered_df['BASE_DATE'].dt.date <= end_date)
+                ]
+            
+            # Apply registration filter if it exists
+            if st.session_state.precision_metrics_registration:
+                unfiltered_df = unfiltered_df[unfiltered_df['IS_REGISTERED'].isin(st.session_state.precision_metrics_registration)]
+            
+            # Calculate total users and watched users from the unfiltered data
+            unfiltered_total_users = unfiltered_df['TOTAL_USERS'].sum()
+            watched_users = unfiltered_df[unfiltered_df['WATCHED_ANY_RECOMMENDED'] == True]['TOTAL_USERS'].sum()
+            watched_any = watched_users / unfiltered_total_users
+        else:
+            # Fallback to using the filtered data if original data is not available
+            watched_users = df[df['WATCHED_ANY_RECOMMENDED'] == True]['TOTAL_USERS'].sum()
+            watched_any = watched_users / total_users
+        
+        # Display metrics in a single row
+        with metrics_container:
+            st.metric("Median Precision Ratio", f"{median_ratio:.2%}")
             st.metric("Total Users", f"{total_users:,}")
+            st.metric("Users Who Watched Recommendations", f"{watched_any:.2%}", f"{watched_users:,} users")
+        
+        # Add a trend graph for monthly percentage of users who watched recommendations
+        st.markdown("### Monthly Trend: Users Who Watched Recommendations")
+        
+        # Create a copy of the unfiltered data for the trend graph
+        if st.session_state.metrics_data is not None:
+            trend_df = st.session_state.metrics_data.copy()
             
-        with col3:
-            watched_any = df[df['WATCHED_ANY_RECOMMENDED'] == True]['TOTAL_USERS'].sum() / total_users
-            st.metric("Users Who Watched", f"{watched_any:.2%}")
+            # Group by month and registration status
+            trend_df['MONTH'] = trend_df['BASE_DATE'].dt.to_period('M')
+            
+            # Create separate dataframes for registered and non-registered users
+            registered_df = trend_df[trend_df['IS_REGISTERED'] == 'yes'].copy()
+            non_registered_df = trend_df[trend_df['IS_REGISTERED'] == 'no'].copy()
+            
+            # Function to calculate monthly metrics
+            def calculate_monthly_metrics(df):
+                if df.empty:
+                    return pd.DataFrame()
+                
+                monthly_data = df.groupby('MONTH').agg({
+                    'TOTAL_USERS': 'sum',
+                    'WATCHED_ANY_RECOMMENDED': lambda x: sum(df.loc[x.index, 'TOTAL_USERS'] * (df.loc[x.index, 'WATCHED_ANY_RECOMMENDED'] == True))
+                }).reset_index()
+                
+                # Calculate percentage
+                monthly_data['PERCENTAGE'] = monthly_data['WATCHED_ANY_RECOMMENDED'] / monthly_data['TOTAL_USERS']
+                
+                # Convert Period to datetime for plotting
+                monthly_data['MONTH_DT'] = monthly_data['MONTH'].astype(str).apply(lambda x: datetime.strptime(x, '%Y-%m'))
+                
+                return monthly_data
+            
+            # Calculate metrics for all user types
+            registered_monthly = calculate_monthly_metrics(registered_df)
+            non_registered_monthly = calculate_monthly_metrics(non_registered_df)
+            total_monthly = calculate_monthly_metrics(trend_df)
+            
+            # Create the trend graph with three lines
+            fig = go.Figure()
+            
+            # Add line for total users (all users combined)
+            if not total_monthly.empty:
+                fig.add_trace(go.Scatter(
+                    x=total_monthly['MONTH_DT'],
+                    y=total_monthly['PERCENTAGE'],
+                    name='All Users',
+                    mode='lines+markers',
+                    line=dict(color='green', width=3),
+                    hovertemplate="<b>Month:</b> %{x|%B %Y}<br>" +
+                                  "<b>Percentage:</b> %{y:.1%}<br>" +
+                                  "<b>Total Users:</b> %{customdata[0]:,}<br>" +
+                                  "<b>Users Who Watched:</b> %{customdata[1]:,}<br>" +
+                                  "<extra></extra>",
+                    customdata=total_monthly[['TOTAL_USERS', 'WATCHED_ANY_RECOMMENDED']]
+                ))
+            
+            # Add line for registered users
+            if not registered_monthly.empty:
+                fig.add_trace(go.Scatter(
+                    x=registered_monthly['MONTH_DT'],
+                    y=registered_monthly['PERCENTAGE'],
+                    name='Registered Users',
+                    mode='lines+markers',
+                    line=dict(color='blue'),
+                    hovertemplate="<b>Month:</b> %{x|%B %Y}<br>" +
+                                  "<b>Percentage:</b> %{y:.1%}<br>" +
+                                  "<b>Total Users:</b> %{customdata[0]:,}<br>" +
+                                  "<b>Users Who Watched:</b> %{customdata[1]:,}<br>" +
+                                  "<extra></extra>",
+                    customdata=registered_monthly[['TOTAL_USERS', 'WATCHED_ANY_RECOMMENDED']]
+                ))
+            
+            # Add line for non-registered users
+            if not non_registered_monthly.empty:
+                fig.add_trace(go.Scatter(
+                    x=non_registered_monthly['MONTH_DT'],
+                    y=non_registered_monthly['PERCENTAGE'],
+                    name='Non-Registered Users',
+                    mode='lines+markers',
+                    line=dict(color='red'),
+                    hovertemplate="<b>Month:</b> %{x|%B %Y}<br>" +
+                                  "<b>Percentage:</b> %{y:.1%}<br>" +
+                                  "<b>Total Users:</b> %{customdata[0]:,}<br>" +
+                                  "<b>Users Who Watched:</b> %{customdata[1]:,}<br>" +
+                                  "<extra></extra>",
+                    customdata=non_registered_monthly[['TOTAL_USERS', 'WATCHED_ANY_RECOMMENDED']]
+                ))
+            
+            # Update layout
+            fig.update_layout(
+                title='Monthly Percentage of Users Who Watched Recommendations',
+                xaxis_title='Month',
+                yaxis_title='Percentage',
+                yaxis=dict(tickformat=".1%"),
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                )
+            )
+            
+            # Display the graph
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Add a note about the graph
+            st.info("This graph shows the percentage of users who watched recommendations over time, separated by registration status. The data is not affected by the watch status filter.")
+            
+            # Add a new trend graph for monthly median precision ratio
+            st.markdown("### Monthly Trend: Median Precision Ratio")
+            
+            # Function to calculate monthly median precision ratio
+            def calculate_monthly_median_precision_ratio(df):
+                if df.empty:
+                    return pd.DataFrame()
+                
+                monthly_data = df.groupby('MONTH').agg({
+                    'MEDIAN_RECOMMENDATION_WATCH_RATIO': 'mean'
+                }).reset_index()
+                
+                # Convert Period to datetime for plotting
+                monthly_data['MONTH_DT'] = monthly_data['MONTH'].astype(str).apply(lambda x: datetime.strptime(x, '%Y-%m'))
+                
+                return monthly_data
+            
+            # Calculate median precision ratio for all user types
+            total_median = calculate_monthly_median_precision_ratio(trend_df)
+            registered_median = calculate_monthly_median_precision_ratio(registered_df)
+            non_registered_median = calculate_monthly_median_precision_ratio(non_registered_df)
+            
+            # Create the trend graph with three lines
+            fig_median = go.Figure()
+            
+            # Add line for total users (all users combined)
+            if not total_median.empty:
+                fig_median.add_trace(go.Scatter(
+                    x=total_median['MONTH_DT'],
+                    y=total_median['MEDIAN_RECOMMENDATION_WATCH_RATIO'],
+                    name='All Users',
+                    mode='lines+markers',
+                    line=dict(color='green', width=3),
+                    hovertemplate="<b>Month:</b> %{x|%B %Y}<br>" +
+                                  "<b>Median Precision Ratio:</b> %{y:.2%}<br>" +
+                                  "<extra></extra>"
+                ))
+            
+            # Add line for registered users
+            if not registered_median.empty:
+                fig_median.add_trace(go.Scatter(
+                    x=registered_median['MONTH_DT'],
+                    y=registered_median['MEDIAN_RECOMMENDATION_WATCH_RATIO'],
+                    name='Registered Users',
+                    mode='lines+markers',
+                    line=dict(color='blue'),
+                    hovertemplate="<b>Month:</b> %{x|%B %Y}<br>" +
+                                  "<b>Median Precision Ratio:</b> %{y:.2%}<br>" +
+                                  "<extra></extra>"
+                ))
+            
+            # Add line for non-registered users
+            if not non_registered_median.empty:
+                fig_median.add_trace(go.Scatter(
+                    x=non_registered_median['MONTH_DT'],
+                    y=non_registered_median['MEDIAN_RECOMMENDATION_WATCH_RATIO'],
+                    name='Non-Registered Users',
+                    mode='lines+markers',
+                    line=dict(color='red'),
+                    hovertemplate="<b>Month:</b> %{x|%B %Y}<br>" +
+                                  "<b>Median Precision Ratio:</b> %{y:.2%}<br>" +
+                                  "<extra></extra>"
+                ))
+            
+            # Update layout
+            fig_median.update_layout(
+                title='Monthly Median Precision Ratio',
+                xaxis_title='Month',
+                yaxis_title='Median Precision Ratio',
+                yaxis=dict(tickformat=".1%"),
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                )
+            )
+            
+            # Display the graph
+            st.plotly_chart(fig_median, use_container_width=True)
+            
+            # Add a note about the median precision ratio graph
+            st.info("This graph shows the median precision ratio over time, separated by registration status. The median precision ratio represents the median percentage of recommended items that were watched by users.")
+        else:
+            st.warning("No data available for trend analysis.")
 
-        # Time series analysis
-        st.subheader("Trends Over Time")
-        
-        # Filter for only users who watched content
-        watched_df = df[df['WATCHED_ANY_RECOMMENDED'] == True].copy()
-        
-        # Daily metrics by registration status - only for users who watched
-        fig = px.line(
-            watched_df, 
-            x='BASE_DATE', 
-            y='MEDIAN_RECOMMENDATION_WATCH_RATIO',
-            color='IS_REGISTERED',
-            title='Median Watch Ratio Over Time by Registration Status (Watched Users Only)',
-            labels={
-                'BASE_DATE': 'Date',
-                'MEDIAN_RECOMMENDATION_WATCH_RATIO': 'Median Watch Ratio',
-                'IS_REGISTERED': 'Registration Status'
-            }
-        )
-        fig.update_layout(yaxis_tickformat='.1%')
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # User engagement over time - only for users who watched
-        fig = px.bar(
-            watched_df, 
-            x='BASE_DATE',
-            y='TOTAL_USERS',
-            color='IS_REGISTERED',
-            title='Daily Active Users by Registration Status (Watched Users Only)',
-            labels={
-                'BASE_DATE': 'Date',
-                'TOTAL_USERS': 'Number of Users',
-                'IS_REGISTERED': 'Registration Status'
-            }
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
         # Detailed analysis tabs
         tab1, tab2 = st.tabs(["Registration Analysis", "Raw Data"])
         
         with tab1:
             # Registration impact analysis - only for users who watched
-            reg_stats = watched_df.groupby('IS_REGISTERED').agg({
+            reg_stats = df.groupby('IS_REGISTERED').agg({
                 'MEDIAN_RECOMMENDATION_WATCH_RATIO': 'mean',
                 'TOTAL_USERS': 'sum'
             }).round(4)
             
             reg_stats.columns = ['Average Watch Ratio', 'Total Users']
             
-            st.subheader("Registration Impact (Watched Users Only)")
+            st.subheader("Registration Impact")
             st.dataframe(reg_stats)
             
         with tab2:
             # Raw data view with download option
             st.subheader("Raw Data")
-            st.dataframe(watched_df)
+            st.dataframe(df)
             
             # Download button for filtered data
-            csv = watched_df.to_csv(index=False)
+            csv = df.to_csv(index=False)
             st.download_button(
                 label="Download Filtered Data as CSV",
                 data=csv,
-                file_name="precision_metrics_watched_users.csv",
+                file_name="precision_metrics_filtered_data.csv",
                 mime="text/csv"
             )
 
@@ -1496,38 +1729,51 @@ with main_col:
                     - Only VOD (Video on Demand) content is included in the analysis
                     """)
 
-                # Create columns for filters
+                # Step 1: Filters section
+                st.markdown("### Filters")
+                # Create columns for filters - always show these regardless of data state
                 filter_col1, filter_col2, filter_col3 = st.columns(3)
                 
                 with filter_col1:
                     # Date range filter
-                    st.markdown("##### 📅 Date Filter")
-                    metrics_date_range = st.date_input(
+                    st.markdown("##### 📅 Date Range")
+                    date_range = st.date_input(
                         "Select date range",
-                        value=(datetime.now().date() - timedelta(days=30), datetime.now().date()),
+                        value=st.session_state.precision_metrics_date_range or (datetime.now().date() - timedelta(days=30), datetime.now().date()),
                         max_value=datetime.now().date(),
                         key="precision_metrics_date"
                     )
+                    
+                    if len(date_range) == 2 and date_range != st.session_state.precision_metrics_date_range:
+                        st.session_state.precision_metrics_date_range = date_range
+                        st.session_state.update_precision_metrics_display = True
                 
                 with filter_col2:
                     # Registration status filter
                     st.markdown("##### 👤 Registration Status")
+                    # Always show the filter with default options if no data is loaded
                     if st.session_state.metrics_data is not None:
                         unique_registered = sorted(st.session_state.metrics_data['IS_REGISTERED'].unique().tolist())
                         selected_registered = st.multiselect(
                             "Filter by Registration Status",
                             options=unique_registered,
-                            default=unique_registered,  # Initially select all
-                            key="precision_metrics_registration"
+                            default=st.session_state.precision_metrics_registration or unique_registered,
+                            key="precision_metrics_registration_select"
                         )
+                        
+                        if selected_registered != st.session_state.precision_metrics_registration:
+                            st.session_state.precision_metrics_registration = selected_registered
+                            st.session_state.update_precision_metrics_display = True
                     else:
-                        selected_registered = ['yes', 'no']  # Default values
-                        st.multiselect(
+                        # Default options when no data is loaded
+                        selected_registered = st.multiselect(
                             "Filter by Registration Status",
                             options=['yes', 'no'],
                             default=['yes', 'no'],
                             key="precision_metrics_registration_default"
                         )
+                        # Update session state with default values
+                        st.session_state.precision_metrics_registration = selected_registered
                 
                 with filter_col3:
                     # Watched any recommended filter
@@ -1536,63 +1782,40 @@ with main_col:
                     selected_watched = st.multiselect(
                         "Filter by Watch Status",
                         options=watched_options,
-                        default=watched_options,  # Initially select all
+                        default=st.session_state.precision_metrics_watched or watched_options,
                         format_func=lambda x: "Watched" if x else "Not Watched",
-                        key="precision_metrics_watched"
+                        key="precision_metrics_watched_select"
                     )
+                    
+                    if selected_watched != st.session_state.precision_metrics_watched:
+                        st.session_state.precision_metrics_watched = selected_watched
+                        st.session_state.update_precision_metrics_display = True
 
-                # Apply filters to the metrics data
-                def apply_precision_metrics_filters(df):
-                    if df is not None:
-                        # Apply date filter
-                        if len(metrics_date_range) == 2:
-                            df = df[
-                                (df['BASE_DATE'].dt.date >= metrics_date_range[0]) &
-                                (df['BASE_DATE'].dt.date <= metrics_date_range[1])
-                            ]
-                        
-                        # Apply registration filter
-                        if selected_registered:
-                            df = df[df['IS_REGISTERED'].isin(selected_registered)]
-                        
-                        # Apply watched filter
-                        if selected_watched:
-                            df = df[df['WATCHED_ANY_RECOMMENDED'].isin(selected_watched)]
-                        
-                        return df
-                    return None
-
-                # Update button
-                if st.button("Update Precision Metrics", key="update_precision"):
+                # Step 2: Load data button
+                if st.button("Load Data for Precision Metrics", key="update_precision"):
                     with st.spinner("Calculating precision metrics..."):
-                        metrics_df = run_precision_metrics_query(metrics_date_range)
+                        metrics_df = run_precision_metrics_query()
                         if metrics_df is not None:
-                            # Convert BASE_DATE to datetime if it's not already
-                            if not pd.api.types.is_datetime64_any_dtype(metrics_df['BASE_DATE']):
-                                metrics_df['BASE_DATE'] = pd.to_datetime(metrics_df['BASE_DATE'])
-                            
-                            # Store the full dataset
+                            # Store the data in session state
                             st.session_state.metrics_data = metrics_df
-                            
-                            # Apply filters and display
-                            filtered_metrics = apply_precision_metrics_filters(metrics_df)
-                            if filtered_metrics is not None:
-                                display_precision_metrics(filtered_metrics)
-                            else:
-                                st.warning("No data matches the selected filters.")
+                            st.session_state.update_precision_metrics_display = True
+                            st.session_state.just_loaded_metrics = True
+                        else:
+                            st.warning("Failed to load precision metrics data.")
                 
-                # Display existing data with new filters
-                elif st.session_state.metrics_data is not None:
+                # Step 3: Display metrics section
+                if st.session_state.metrics_data is not None:
+                    # Apply filters to the data
                     filtered_metrics = apply_precision_metrics_filters(st.session_state.metrics_data)
+                    
                     if filtered_metrics is not None and not filtered_metrics.empty:
+                        # Display metrics in a separate section
+                        st.markdown("### Metrics")
                         display_precision_metrics(filtered_metrics)
                     else:
                         st.warning("No data matches the selected filters.")
-                else:
-                    st.info("Click 'Update Precision Metrics' to load the data.")
-
-                # Add a divider after Precision Metrics
-                st.divider()
+                elif st.session_state.metrics_data is None:
+                    st.info("Click 'Load Data for Precision Metrics' to load the data.")
         else:
             st.info("👈 Click 'Load Analytics Data' in the sidebar to analyze the dataset.")
     else:
