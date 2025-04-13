@@ -380,7 +380,8 @@ def run_precision_metrics_query(date_range=None):
                   'recoforyoulane',
                   'becauseyouwatchedlane',
                   'becauseyouwatchedlanediscovery'
-              ) 
+              )
+              and lvf.base_date < DATEADD(DAY, -7, CURRENT_DATE)
             {date_filter}
         ),
         watched_videos as (
@@ -403,7 +404,7 @@ def run_precision_metrics_query(date_range=None):
                 ON r.user_id = v.user_id
                 AND (v.tvshow_asset_id = r.asset_id OR v.asset_id = r.asset_id)
                 AND v.base_date > r.base_date
-                AND DATEDIFF(DAY, r.base_date, v.base_date) < 30
+                AND DATEDIFF(DAY, r.base_date, v.base_date) < 8
                 and v.base_date > dateadd(day,-90,current_date) 
                 and v.content_type = 'VOD'
             GROUP BY r.user_id, r.base_date, r.device_platform
@@ -1491,7 +1492,7 @@ with main_col:
                     ### Notes
                     - All metrics are calculated on a daily basis
                     - Watch events are counted only if they occur after the recommendation
-                    - A 30-day window is used for attributing views to recommendations
+                    - A 7-day window is used for attributing views to recommendations
                     - Only VOD (Video on Demand) content is included in the analysis
                     """)
 
