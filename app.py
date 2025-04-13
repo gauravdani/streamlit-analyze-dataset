@@ -474,8 +474,8 @@ def apply_precision_metrics_filters(df):
         if st.session_state.precision_metrics_registration:
             filtered_df = filtered_df[filtered_df['IS_REGISTERED'].isin(st.session_state.precision_metrics_registration)]
         
-        # Apply watched filter
-        if st.session_state.precision_metrics_watched:
+        # Apply watched filter - only if it's explicitly set
+        if st.session_state.precision_metrics_watched and len(st.session_state.precision_metrics_watched) < 2:
             filtered_df = filtered_df[filtered_df['WATCHED_ANY_RECOMMENDED'].isin(st.session_state.precision_metrics_watched)]
         
         return filtered_df
@@ -489,7 +489,36 @@ def display_precision_metrics(df):
         
         # Calculate metrics
         median_ratio = df['MEDIAN_RECOMMENDATION_WATCH_RATIO'].mean()
-        total_users = df['TOTAL_USERS'].sum()
+        
+        # Calculate total users from the original unfiltered data
+        # This ensures it's not affected by the watch status filter
+        if st.session_state.metrics_data is not None:
+            # Apply only date and registration filters to get the total users
+            unfiltered_df = st.session_state.metrics_data.copy()
+            
+            # Apply date filter if it exists
+            if st.session_state.precision_metrics_date_range and len(st.session_state.precision_metrics_date_range) == 2:
+                start_date, end_date = st.session_state.precision_metrics_date_range
+                # Convert to datetime if they're date objects
+                if hasattr(start_date, 'date') and not hasattr(start_date, 'time'):
+                    start_date = datetime.combine(start_date, datetime.min.time())
+                if hasattr(end_date, 'date') and not hasattr(end_date, 'time'):
+                    end_date = datetime.combine(end_date, datetime.max.time())
+                    
+                unfiltered_df = unfiltered_df[
+                    (unfiltered_df['BASE_DATE'].dt.date >= start_date) &
+                    (unfiltered_df['BASE_DATE'].dt.date <= end_date)
+                ]
+            
+            # Apply registration filter if it exists
+            if st.session_state.precision_metrics_registration:
+                unfiltered_df = unfiltered_df[unfiltered_df['IS_REGISTERED'].isin(st.session_state.precision_metrics_registration)]
+            
+            # Calculate total users from the unfiltered data
+            total_users = unfiltered_df['TOTAL_USERS'].sum()
+        else:
+            # Fallback to using the filtered data if original data is not available
+            total_users = df['TOTAL_USERS'].sum()
         
         # Calculate watched users from the original unfiltered data
         # This ensures it's not affected by the watch status filter
