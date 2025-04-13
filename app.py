@@ -15,6 +15,8 @@ import os
 import sys
 from datetime import datetime, timedelta
 import duckdb
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Load environment variables
 load_dotenv()
@@ -81,27 +83,42 @@ st.sidebar.write(f"SNOWFLAKE_USER: {'✅ Set' if user else '❌ Not Set'}")
 st.sidebar.write(f"SNOWFLAKE_ACCOUNT: {'✅ Set' if account else '❌ Not Set'}")
 st.sidebar.write(f"SNOWFLAKE_WAREHOUSE: {'✅ Set' if warehouse else '❌ Not Set'}")
 
-# Initialize session state for connection and data
-if 'conn' not in st.session_state:
-    st.session_state.conn = None
-if 'data' not in st.session_state:
-    st.session_state.data = None
-if 'data_loaded' not in st.session_state:
-    st.session_state.data_loaded = False
-if 'filtered_data' not in st.session_state:
-    st.session_state.filtered_data = None
-if 'date_range' not in st.session_state:
-    st.session_state.date_range = None
-if 'lane_type_filter' not in st.session_state:
-    st.session_state.lane_type_filter = []
-if 'is_registered_filter' not in st.session_state:
-    st.session_state.is_registered_filter = []
-if 'device_platform_filter' not in st.session_state:
-    st.session_state.device_platform_filter = []
-if 'date_preset' not in st.session_state:
-    st.session_state.date_preset = None
-if 'current_query' not in st.session_state:
-    st.session_state.current_query = None
+# Add these helper functions
+def get_date_range():
+    """Safely get the date range from the data"""
+    if st.session_state.data is not None and 'BASE_DATE' in st.session_state.data.columns:
+        min_date = st.session_state.data['BASE_DATE'].min()
+        max_date = st.session_state.data['BASE_DATE'].max()
+        return min_date, max_date
+    return None, None
+
+def initialize_session_state():
+    """Initialize all session state variables"""
+    if 'conn' not in st.session_state:
+        st.session_state.conn = None
+    if 'data' not in st.session_state:
+        st.session_state.data = None
+    if 'metrics_data' not in st.session_state:
+        st.session_state.metrics_data = None
+    if 'data_loaded' not in st.session_state:
+        st.session_state.data_loaded = False
+    if 'filtered_data' not in st.session_state:
+        st.session_state.filtered_data = None
+    if 'date_range' not in st.session_state:
+        st.session_state.date_range = None
+    if 'lane_type_filter' not in st.session_state:
+        st.session_state.lane_type_filter = []
+    if 'is_registered_filter' not in st.session_state:
+        st.session_state.is_registered_filter = []
+    if 'device_platform_filter' not in st.session_state:
+        st.session_state.device_platform_filter = []
+    if 'date_preset' not in st.session_state:
+        st.session_state.date_preset = None
+    if 'current_query' not in st.session_state:
+        st.session_state.current_query = None
+
+# Initialize session state at the start
+initialize_session_state()
 
 def test_connection():
     """Test connection to Snowflake and display detailed information"""
@@ -334,6 +351,188 @@ def apply_date_preset(preset):
     apply_filters()
     st.rerun()
 
+# Add this new function for precision metrics with its own date handling
+def run_precision_metrics_query(date_range=None):
+    """Execute the precision metrics query with optional date filtering"""
+    try:
+        if not st.session_state.conn:
+            st.error("❌ No connection to Snowflake. Please connect first.")
+            return None
+            
+        st.info("🔄 Running precision metrics query...")
+        
+        cursor = st.session_state.conn.cursor()
+        cursor.execute(f"USE WAREHOUSE {warehouse}")
+        
+        # Base query with date range parameter
+        query = """
+        WITH recent_lane_views AS (
+            SELECT
+                lvf.user_id,
+                lvf.base_date,
+                lvf.device_platform,
+                playground.dani.standardize_lane_type(lvf.list_type, lvf.list_name) AS lane_type,
+                CAST(GET_PATH(flattened.value, 'asset_id') AS TEXT) AS asset_id
+            FROM joyn_snow.im.lane_views_f AS lvf,
+                 LATERAL FLATTEN(INPUT => lvf.asset_list) AS flattened
+            WHERE lvf.base_date > DATEADD(DAY, -90, CURRENT_DATE)
+              AND playground.dani.standardize_lane_type(lvf.list_type, lvf.list_name) IN (
+                  'recoforyoulane',
+                  'becauseyouwatchedlane',
+                  'becauseyouwatchedlanediscovery'
+              ) 
+            {date_filter}
+        ),
+        watched_videos as (
+            SELECT
+                r.base_date,
+                r.user_id,
+                r.device_platform,
+                COUNT(DISTINCT r.asset_id) AS distinct_recommended,
+                COUNT(DISTINCT CASE 
+                    WHEN v.user_id IS NOT NULL THEN COALESCE(v.tvshow_asset_id, v.asset_id)
+                END) AS distinct_vvs_from_recommendations,
+                IFF(COUNT_IF(v.user_id IS NOT NULL) > 0, TRUE, FALSE) AS watched_any_recommended,
+                CASE 
+                    WHEN r.user_id LIKE 'JNDE%' THEN 'yes'
+                    ELSE 'no'
+                END AS is_registered,
+                round(zeroifnull(distinct_vvs_from_recommendations)/nullifzero(distinct_recommended),2) as pct_watched
+            FROM recent_lane_views r
+            LEFT JOIN joyn_snow.im.video_views_epg_extended v
+                ON r.user_id = v.user_id
+                AND (v.tvshow_asset_id = r.asset_id OR v.asset_id = r.asset_id)
+                AND v.base_date > r.base_date
+                AND DATEDIFF(DAY, r.base_date, v.base_date) < 30
+                and v.base_date > dateadd(day,-90,current_date) 
+                and v.content_type = 'VOD'
+            GROUP BY r.user_id, r.base_date, r.device_platform
+        )
+        SELECT
+            base_date,
+            is_registered,
+            watched_any_recommended,
+            count(distinct user_id) as total_users,
+            median(pct_watched) AS median_recommendation_watch_ratio
+        FROM watched_videos
+        group by all
+        order by 1 asc
+        """
+        
+        # Add date filter if provided
+        date_filter = ""
+        if date_range and len(date_range) == 2:
+            date_filter = f"AND lvf.base_date BETWEEN '{date_range[0]}' AND '{date_range[1]}'"
+        
+        # Format query with date filter
+        query = query.format(date_filter=date_filter)
+        
+        cursor.execute(query)
+        columns = [desc[0] for desc in cursor.description]
+        results = cursor.fetchall()
+        return pd.DataFrame(results, columns=columns)
+        
+    except Exception as e:
+        st.error(f"❌ Error executing precision metrics query: {str(e)}")
+        return None
+
+def display_precision_metrics(df):
+    """Display precision metrics visualizations"""
+    if df is not None:
+        # Overall metrics
+        st.subheader("Overall Metrics")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            median_ratio = df['MEDIAN_RECOMMENDATION_WATCH_RATIO'].mean()
+            st.metric("Median Watch Ratio", f"{median_ratio:.2%}")
+            
+        with col2:
+            total_users = df['TOTAL_USERS'].sum()
+            st.metric("Total Users", f"{total_users:,}")
+            
+        with col3:
+            watched_any = df[df['WATCHED_ANY_RECOMMENDED'] == True]['TOTAL_USERS'].sum() / total_users
+            st.metric("Users Who Watched", f"{watched_any:.2%}")
+
+        # Time series analysis
+        st.subheader("Trends Over Time")
+        
+        # Filter for only users who watched content
+        watched_df = df[df['WATCHED_ANY_RECOMMENDED'] == True].copy()
+        
+        # Daily metrics by registration status - only for users who watched
+        fig = px.line(
+            watched_df, 
+            x='BASE_DATE', 
+            y='MEDIAN_RECOMMENDATION_WATCH_RATIO',
+            color='IS_REGISTERED',
+            title='Median Watch Ratio Over Time by Registration Status (Watched Users Only)',
+            labels={
+                'BASE_DATE': 'Date',
+                'MEDIAN_RECOMMENDATION_WATCH_RATIO': 'Median Watch Ratio',
+                'IS_REGISTERED': 'Registration Status'
+            }
+        )
+        fig.update_layout(yaxis_tickformat='.1%')
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # User engagement over time - only for users who watched
+        fig = px.bar(
+            watched_df, 
+            x='BASE_DATE',
+            y='TOTAL_USERS',
+            color='IS_REGISTERED',
+            title='Daily Active Users by Registration Status (Watched Users Only)',
+            labels={
+                'BASE_DATE': 'Date',
+                'TOTAL_USERS': 'Number of Users',
+                'IS_REGISTERED': 'Registration Status'
+            }
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Detailed analysis tabs
+        tab1, tab2 = st.tabs(["Registration Analysis", "Raw Data"])
+        
+        with tab1:
+            # Registration impact analysis - only for users who watched
+            reg_stats = watched_df.groupby('IS_REGISTERED').agg({
+                'MEDIAN_RECOMMENDATION_WATCH_RATIO': 'mean',
+                'TOTAL_USERS': 'sum'
+            }).round(4)
+            
+            reg_stats.columns = ['Average Watch Ratio', 'Total Users']
+            
+            st.subheader("Registration Impact (Watched Users Only)")
+            st.dataframe(reg_stats)
+            
+        with tab2:
+            # Raw data view with download option
+            st.subheader("Raw Data")
+            st.dataframe(watched_df)
+            
+            # Download button for filtered data
+            csv = watched_df.to_csv(index=False)
+            st.download_button(
+                label="Download Filtered Data as CSV",
+                data=csv,
+                file_name="precision_metrics_watched_users.csv",
+                mime="text/csv"
+            )
+
+# Add async execution function
+async def run_queries_async():
+    """Run both analytics and precision metrics queries asynchronously"""
+    with ThreadPoolExecutor() as executor:
+        loop = asyncio.get_event_loop()
+        analytics_future = loop.run_in_executor(executor, run_analytics_query)
+        metrics_future = loop.run_in_executor(executor, run_precision_metrics_query)
+        
+        # Wait for both queries to complete
+        analytics_df, metrics_df = await asyncio.gather(analytics_future, metrics_future)
+        return analytics_df, metrics_df
+
 # Main app
 st.title("❄️ Recommendation Analytics Dashboard")
 
@@ -395,8 +594,7 @@ with main_col:
             
             # Date range filter
             st.markdown("##### 📅 Custom Date Range")
-            min_date = st.session_state.data['BASE_DATE'].min()
-            max_date = st.session_state.data['BASE_DATE'].max()
+            min_date, max_date = get_date_range()
             
             # Initialize date range if not set
             if st.session_state.date_range is None:
@@ -1242,6 +1440,158 @@ with main_col:
                     )
                 else:
                     st.warning("No data available for lane performance analysis with current filters.")
+
+            # Add a divider after Lane Performance Analysis
+            st.divider()
+
+            # Precision Metrics section in a container
+            with st.container():
+                st.subheader("🎯 Precision Metrics")
+                
+                # Add metrics description expander
+                with st.expander("📊 Metrics Explained", expanded=False):
+                    st.markdown("""
+                    ### Precision Metrics Definitions
+                    
+                    #### Watch Ratio Metrics
+                    
+                    **Median Recommendation Watch Ratio**
+                    - Definition: The median percentage of recommended items that were watched by users
+                    - Calculation: `(Number of items watched / Number of items recommended) × 100`
+                    - Interpretation: Higher ratios indicate better recommendation precision
+                    
+                    **Watched Any Recommended**
+                    - Definition: Whether a user watched at least one recommended item
+                    - Values: True (watched) / False (not watched)
+                    - Use: Measures basic engagement with recommendations
+                    
+                    #### User Metrics
+                    
+                    **Total Users**
+                    - Definition: Count of unique users who received recommendations
+                    - Segmentation: Split by registration status (registered vs. non-registered)
+                    - Time frame: Aggregated by day
+                    
+                    **Distinct Recommended**
+                    - Definition: Number of unique items recommended to each user
+                    - Use: Measures recommendation diversity
+                    
+                    **Distinct Views from Recommendations**
+                    - Definition: Number of unique recommended items actually watched
+                    - Time window: Counts views within 30 days of recommendation
+                    - Limitation: Only counts VOD content
+                    
+                    #### Registration Impact
+                    
+                    **Registration Status**
+                    - Definition: Whether a user is registered ('yes') or not ('no')
+                    - Format: Based on user ID pattern (JNDE prefix for registered users)
+                    - Use: Analyze recommendation effectiveness by user type
+                    
+                    ### Notes
+                    - All metrics are calculated on a daily basis
+                    - Watch events are counted only if they occur after the recommendation
+                    - A 30-day window is used for attributing views to recommendations
+                    - Only VOD (Video on Demand) content is included in the analysis
+                    """)
+
+                # Create columns for filters
+                filter_col1, filter_col2, filter_col3 = st.columns(3)
+                
+                with filter_col1:
+                    # Date range filter
+                    st.markdown("##### 📅 Date Filter")
+                    metrics_date_range = st.date_input(
+                        "Select date range",
+                        value=(datetime.now().date() - timedelta(days=30), datetime.now().date()),
+                        max_value=datetime.now().date(),
+                        key="precision_metrics_date"
+                    )
+                
+                with filter_col2:
+                    # Registration status filter
+                    st.markdown("##### 👤 Registration Status")
+                    if st.session_state.metrics_data is not None:
+                        unique_registered = sorted(st.session_state.metrics_data['IS_REGISTERED'].unique().tolist())
+                        selected_registered = st.multiselect(
+                            "Filter by Registration Status",
+                            options=unique_registered,
+                            default=unique_registered,  # Initially select all
+                            key="precision_metrics_registration"
+                        )
+                    else:
+                        selected_registered = ['yes', 'no']  # Default values
+                        st.multiselect(
+                            "Filter by Registration Status",
+                            options=['yes', 'no'],
+                            default=['yes', 'no'],
+                            key="precision_metrics_registration_default"
+                        )
+                
+                with filter_col3:
+                    # Watched any recommended filter
+                    st.markdown("##### 👁️ Watch Status")
+                    watched_options = [True, False]
+                    selected_watched = st.multiselect(
+                        "Filter by Watch Status",
+                        options=watched_options,
+                        default=watched_options,  # Initially select all
+                        format_func=lambda x: "Watched" if x else "Not Watched",
+                        key="precision_metrics_watched"
+                    )
+
+                # Apply filters to the metrics data
+                def apply_precision_metrics_filters(df):
+                    if df is not None:
+                        # Apply date filter
+                        if len(metrics_date_range) == 2:
+                            df = df[
+                                (df['BASE_DATE'].dt.date >= metrics_date_range[0]) &
+                                (df['BASE_DATE'].dt.date <= metrics_date_range[1])
+                            ]
+                        
+                        # Apply registration filter
+                        if selected_registered:
+                            df = df[df['IS_REGISTERED'].isin(selected_registered)]
+                        
+                        # Apply watched filter
+                        if selected_watched:
+                            df = df[df['WATCHED_ANY_RECOMMENDED'].isin(selected_watched)]
+                        
+                        return df
+                    return None
+
+                # Update button
+                if st.button("Update Precision Metrics", key="update_precision"):
+                    with st.spinner("Calculating precision metrics..."):
+                        metrics_df = run_precision_metrics_query(metrics_date_range)
+                        if metrics_df is not None:
+                            # Convert BASE_DATE to datetime if it's not already
+                            if not pd.api.types.is_datetime64_any_dtype(metrics_df['BASE_DATE']):
+                                metrics_df['BASE_DATE'] = pd.to_datetime(metrics_df['BASE_DATE'])
+                            
+                            # Store the full dataset
+                            st.session_state.metrics_data = metrics_df
+                            
+                            # Apply filters and display
+                            filtered_metrics = apply_precision_metrics_filters(metrics_df)
+                            if filtered_metrics is not None:
+                                display_precision_metrics(filtered_metrics)
+                            else:
+                                st.warning("No data matches the selected filters.")
+                
+                # Display existing data with new filters
+                elif st.session_state.metrics_data is not None:
+                    filtered_metrics = apply_precision_metrics_filters(st.session_state.metrics_data)
+                    if filtered_metrics is not None and not filtered_metrics.empty:
+                        display_precision_metrics(filtered_metrics)
+                    else:
+                        st.warning("No data matches the selected filters.")
+                else:
+                    st.info("Click 'Update Precision Metrics' to load the data.")
+
+                # Add a divider after Precision Metrics
+                st.divider()
         else:
             st.info("👈 Click 'Load Analytics Data' in the sidebar to analyze the dataset.")
     else:
@@ -1337,4 +1687,21 @@ with notes_col:
             st.write(note['content'])
             st.divider()
     else:
-        st.info(f"No notes found for {search_date}") 
+        st.info(f"No notes found for {search_date}")
+
+# Add this helper function for date conversion
+def convert_to_date_range(min_date, max_date, current_range=None):
+    """Convert timestamps to date objects and handle None values"""
+    if min_date is not None and max_date is not None:
+        # Convert Pandas Timestamp to datetime.date
+        min_date = min_date.date() if hasattr(min_date, 'date') else min_date
+        max_date = max_date.date() if hasattr(max_date, 'date') else max_date
+        
+        # If there's a current range, convert it too
+        if current_range and len(current_range) == 2:
+            start_date = current_range[0].date() if hasattr(current_range[0], 'date') else current_range[0]
+            end_date = current_range[1].date() if hasattr(current_range[1], 'date') else current_range[1]
+            return (start_date, end_date)
+        
+        return (min_date, max_date)
+    return None 
