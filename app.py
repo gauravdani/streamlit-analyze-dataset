@@ -152,10 +152,22 @@ def test_connection():
         conn_params = {
             'user': user,
             'account': account,
-            'authenticator': 'externalbrowser',
             'client_session_keep_alive': True,
             'warehouse': warehouse  # Always include warehouse
         }
+        
+        # Determine authentication method
+        authenticator = os.getenv('SNOWFLAKE_AUTHENTICATOR', 'externalbrowser')
+        if authenticator == 'keypair':
+            private_key = os.getenv('SNOWFLAKE_PRIVATE_KEY')
+            if not private_key:
+                st.error("❌ Missing private key for key-based authentication")
+                st.error("Please set SNOWFLAKE_PRIVATE_KEY environment variable")
+                return None
+            conn_params['authenticator'] = 'keypair'
+            conn_params['private_key'] = private_key
+        else:
+            conn_params['authenticator'] = 'externalbrowser'
         
         # Add optional parameters if they exist
         for param in ['SNOWFLAKE_ROLE', 'SNOWFLAKE_DATABASE', 'SNOWFLAKE_SCHEMA']:
@@ -164,6 +176,9 @@ def test_connection():
                 param_name = param.replace('SNOWFLAKE_', '').lower()
                 conn_params[param_name] = value
                 st.write(f"Using {param_name}: {value}")
+        
+        # Display authentication method
+        st.write(f"Using authentication method: {conn_params['authenticator']}")
         
         # Establish connection
         st.write("Establishing connection...")
