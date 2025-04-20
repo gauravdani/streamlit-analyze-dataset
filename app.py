@@ -852,6 +852,11 @@ def apply_precision_metrics_filters(df):
 def display_precision_metrics(metrics_df):
     """Display precision metrics visualization"""
     if metrics_df is not None and not metrics_df.empty:
+        # Convert timestamps to datetime objects for proper display
+        metrics_df = metrics_df.copy()
+        if 'BASE_DATE' in metrics_df.columns:
+            metrics_df['BASE_DATE'] = pd.to_datetime(metrics_df['BASE_DATE']).dt.tz_localize(None)
+
         # Add metrics description section
         with st.expander("📊 Precision Metrics Definitions", expanded=False):
             st.markdown("""
