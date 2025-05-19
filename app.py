@@ -47,50 +47,26 @@ def display_data_summary(df):
     
     # Display metrics definitions
     with st.expander("Metrics Definitions", expanded=False):
-        st.markdown("""
+        # Get the current query from session state, or a default message if not foundnt query from session state, or a default message if not foundy = st.session_state.get('current_query', "Analytics query has not been run yet or is not available.")
+        query_to_display = st.session_state.get('current_query', "Analytics query has not been run yet or is not available.")
+        st.markdown(f"""
+        st.markdown(f"""
         ### Key Metrics Definitions
-        
+        pes
         - **Total Impressions**: The total number of unique user impressions across all lane types
-        - **Total Clicks**: The total number of unique user clicks across all lane types
-        - **Conversion Rate**: The percentage of unique users who clicked after being impressed
+        - **Total Clicks**: The total number of unique user clicks across all lane types- **Conversion Rate**: The percentage of unique users who clicked after being impressed
+        - **Conversion Rate**: The percentage of unique users who clicked after being impressedRate**: The middle value of all conversion rates, separating the higher half from the lower half
         - **Median Conversion Rate**: The middle value of all conversion rates, separating the higher half from the lower half
         
         ### Additional Metrics
-        
-        - **Standard Deviation**: Measures the amount of variation or dispersion in the conversion rates
-        - **Minimum/Maximum**: The lowest and highest conversion rates observed
+        rates
+        - **Standard Deviation**: Measures the amount of variation or dispersion in the conversion rates        - **Minimum/Maximum**: The lowest and highest conversion rates observed
+        - **Minimum/Maximum**: The lowest and highest conversion rates observede**: The values below which 25% and 75% of the conversion rates fall
         - **25th/75th Percentile**: The values below which 25% and 75% of the conversion rates fall
 
         ### Lane Analysis Query
         ```sql
-        WITH correct_lane_views_f AS (
-            SELECT *,
-                playground.dani.standardize_lane_type(list_type, list_name) AS lane_type,
-                case when user_id like 'JNAA%' then 'no' else 'yes' end as is_registered,
-            FROM joyn_snow.im_main.lane_views_f
-            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
-        ),
-        correct_as_f AS (
-            SELECT user_id,lane_type,base_date,lane_label,event_type,distribution_tenant,
-                playground.dani.standardize_lane_type(lane_type, lane_label) AS rlane_type
-            FROM joyn_snow.im_main.asset_select_f
-            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
-            union all
-            SELECT user_id,lane_type,base_date,lane_label,event_type,
-                playground.dani.standardize_lane_type(lane_type, lane_label) AS rlane_type, distribution_tenant
-            FROM joyn_snow.im_main.video_playback_request_f
-            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
-        )
-        SELECT 
-            a.base_date,a.lane_type,a.is_registered,a.device_platform,a.distribution_tenant,
-            HLL(DISTINCT a.user_id) as distinct_user_impressions,
-            HLL(DISTINCT CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) AS distinct_user_clicks,
-            ROUND((HLL(CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) / NULLIF(COUNT(DISTINCT a.user_id), 0)) * 100, 2) AS conversion_rate_pct 
-        FROM correct_lane_views_f a 
-        LEFT JOIN correct_as_f b ON 
-        (a.user_id = b.user_id  and a.lane_type = b.rlane_type AND datediff(day, a.base_date, b.base_date) < 8 and b.base_date >= a.base_date and a.distribution_tenant = b.distribution_tenant)
-        GROUP BY all 
-        order by 1 asc;
+{query_to_display}
         ```
         """)
 
@@ -395,6 +371,7 @@ st.sidebar.header("Environment Variables")
 user = os.getenv('SNOWFLAKE_USER')
 account = os.getenv('SNOWFLAKE_ACCOUNT')
 warehouse = os.getenv('SNOWFLAKE_WAREHOUSE')
+password = os.getenv('SNOWFLAKE_PASSWORD')
 st.sidebar.write(f"SNOWFLAKE_USER: {'✅ Set' if user else '❌ Not Set'}")
 st.sidebar.write(f"SNOWFLAKE_ACCOUNT: {'✅ Set' if account else '❌ Not Set'}")
 st.sidebar.write(f"SNOWFLAKE_WAREHOUSE: {'✅ Set' if warehouse else '❌ Not Set'}")
@@ -487,30 +464,18 @@ def test_connection():
             'warehouse': warehouse  # Always include warehouse
         }
         
-        # Determine authentication method
-        authenticator = os.getenv('SNOWFLAKE_AUTHENTICATOR', 'externalbrowser')
-        if authenticator == 'keypair':
-            private_key = os.getenv('SNOWFLAKE_PRIVATE_KEY')
-            if not private_key:
-                st.error("❌ Missing private key for key-based authentication")
-                st.error("Please set SNOWFLAKE_PRIVATE_KEY environment variable")
-                return None
-            conn_params['authenticator'] = 'keypair'
-            conn_params['private_key'] = private_key
-        else:
-            conn_params['authenticator'] = 'externalbrowser'
+        # Use username/password authentication
+        password = os.getenv('SNOWFLAKE_PASSWORD')
         
-        # Add optional parameters if they exist
-        for param in ['SNOWFLAKE_ROLE', 'SNOWFLAKE_DATABASE', 'SNOWFLAKE_SCHEMA']:
-            value = os.getenv(param)
-            if value:
-                param_name = param.replace('SNOWFLAKE_', '').lower()
-                conn_params[param_name] = value
-                st.write(f"Using {param_name}: {value}")
+        if not password:
+            st.error("❌ SNOWFLAKE_PASSWORD environment variable not set.")
+            st.error("Please set SNOWFLAKE_PASSWORD for username/password authentication.")
+            return None
         
-        # Display authentication method
-        st.write(f"Using authentication method: {conn_params['authenticator']}")
-        
+        conn_params['password'] = password
+        # Original authenticator logic (externalbrowser/keypair) has been removed 
+        # to default to username/password authentication.
+
         # Establish connection
         st.write("Establishing connection...")
         conn = snowflake.connector.connect(**conn_params)
@@ -601,8 +566,132 @@ def run_analytics_query():
         columns = [desc[0] for desc in cursor.description]
         df = pd.DataFrame(results, columns=columns)
         
-        # Convert base_date to datetime
-        df['BASE_DATE'] = pd.to_datetime(df['BASE_DATE'])
+        # Convert base_date to datetime, coercing errors, and ensure it's timezone-naive
+        df['BASE_DATE'] = pd.to_datetime(df['BASE_DATE'], errors='coerce')
+        if hasattr(df['BASE_DATE'].dt, 'tz') and df['BASE_DATE'].dt.tz is not None:
+            df['BASE_DATE'] = df['BASE_DATE'].dt.tz_localize(None)
+        
+        # Filter out rows where lane_type contains non-alphabetical characters
+        original_count = len(df)
+        df = df[df['LANE_TYPE'].str.match(r'^[a-zA-Z]+$', na=False)]
+        filtered_count = len(df)
+        
+        if original_count > filtered_count:
+            st.info(f"⚠️ Filtered out {original_count - filtered_count} rows where lane_type contained non-alphabetical characters.")
+        
+        # Store data in session state
+        st.session_state.data = df
+        st.session_state.data_loaded = True
+        st.session_state.filtered_data = df.copy()
+        
+        # Initialize date range to full range
+        if st.session_state.date_range is None:
+            st.session_state.date_range = (df['BASE_DATE'].min(), df['BASE_DATE'].max())
+        
+        st.success(f"✅ Query executed successfully! Retrieved {len(df)} rows.")
+        return df
+        
+    except Exception as e:
+        st.error(f"❌ Error executing query: {str(e)}")
+        if "No active warehouse selected" in str(e):
+            st.error("Please check your .env file and ensure SNOWFLAKE_WAREHOUSE is set correctly")
+        # Original authenticator logic (externalbrowser/keypair) has been removed 
+        # to default to username/password authentication.
+
+        # Establish connection
+        st.write("Establishing connection...")
+        conn = snowflake.connector.connect(**conn_params)
+        
+        # Test connection with a simple query
+        st.write("Testing connection with a simple query...")
+        cursor = conn.cursor()
+        cursor.execute("SELECT current_version()")
+        version = cursor.fetchone()[0]
+        
+        # Get account information
+        cursor.execute("SELECT current_account(), current_region(), current_warehouse(), current_database(), current_schema()")
+        account_info = cursor.fetchone()
+        
+        # Display success information
+        st.success("✅ Successfully connected to Snowflake!")
+        
+        # Display connection details
+        st.subheader("Connection Details")
+        st.write(f"**Snowflake Version:** {version}")
+        st.write(f"**Account:** {account_info[0]}")
+        st.write(f"**Region:** {account_info[1]}")
+        st.write(f"**Warehouse:** {account_info[2]}")
+        st.write(f"**Database:** {account_info[3]}")
+        st.write(f"**Schema:** {account_info[4]}")
+        
+        # Store connection in session state
+        st.session_state.conn = conn
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Error connecting to Snowflake: {str(e)}")
+        st.error("Please check your credentials and network connection")
+        return None
+
+def run_analytics_query():
+    """Execute the analytics query and return the results as a DataFrame"""
+    try:
+        if not st.session_state.conn:
+            st.error("❌ No connection to Snowflake. Please connect first.")
+            return None
+            
+        st.info("🔄 Running analytics query...")
+        
+        # Ensure warehouse is selected
+        cursor = st.session_state.conn.cursor()
+        cursor.execute(f"USE WAREHOUSE {warehouse}")
+        st.write(f"✅ Using warehouse: {warehouse}")
+        
+        query = """
+        WITH correct_lane_views_f AS (
+            SELECT *,
+                playground.dani.standardize_lane_type(list_type, list_name,screen_name) AS lane_type,
+                case when user_id not like 'JNAA%' then 'no' else 'yes' end as is_registered,
+            FROM joyn_snow.im_main.lane_views_f
+            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
+            and base_date < dateadd(DAY, -7, CURRENT_DATE)
+        ),
+        correct_as_f AS (
+            SELECT user_id,lane_type,base_date,lane_label,event_type,
+                playground.dani.standardize_lane_type(lane_type, lane_label,screen_name) AS rlane_type,distribution_tenant, 'as' as event_src
+            FROM joyn_snow.im_main.asset_select_f
+            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
+            union all
+            SELECT user_id,lane_type,base_date,lane_label,event_type,
+                playground.dani.standardize_lane_type(lane_type, lane_label,screen_name) AS rlane_type,distribution_tenant, 'vpr' as event_src
+            FROM joyn_snow.im_main.video_playback_request_f
+            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
+        )
+        SELECT 
+            a.base_date,a.lane_type,a.is_registered,a.device_platform,a.distribution_tenant,
+            HLL(DISTINCT a.user_id) as distinct_user_impressions,
+            HLL(DISTINCT CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) AS distinct_user_clicks,
+            ROUND((HLL(CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) / NULLIF(COUNT(DISTINCT a.user_id), 0)) * 100, 2) AS conversion_rate_pct 
+        FROM correct_lane_views_f a 
+        LEFT JOIN correct_as_f b ON 
+        (a.user_id = b.user_id  and a.lane_type = b.rlane_type AND datediff(day, a.base_date, b.base_date) < 8 and b.base_date >= a.base_date and a.distribution_tenant = b.distribution_tenant)
+        GROUP BY all 
+        order by 1 asc;
+        """
+        
+        # Store the query in session state for display
+        st.session_state.current_query = query
+        
+        cursor.execute(query)
+        results = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        df = pd.DataFrame(results, columns=columns)
+        
+        # Convert base_date to datetime, coercing errors, and ensure it's timezone-naive
+        df['BASE_DATE'] = pd.to_datetime(df['BASE_DATE'], errors='coerce')
+        if hasattr(df['BASE_DATE'].dt, 'tz') and df['BASE_DATE'].dt.tz is not None:
+            df['BASE_DATE'] = df['BASE_DATE'].dt.tz_localize(None)
         
         # Filter out rows where lane_type contains non-alphabetical characters
         original_count = len(df)
@@ -651,6 +740,15 @@ def apply_filters():
         filtered_df = filtered_df[filtered_df['IS_REGISTERED'].isin(st.session_state.is_registered_filter)]
     
     # Apply device_platform filter
+    if st.session_state.device_platform_filter:
+        filtered_df = filtered_df[filtered_df['DEVICE_PLATFORM'].isin(st.session_state.device_platform_filter)]
+    
+    # Apply distribution_tenant filter
+    if st.session_state.distribution_tenant_filter:
+        filtered_df = filtered_df[filtered_df['DISTRIBUTION_TENANT'].isin(st.session_state.distribution_tenant_filter)]
+    
+    st.session_state.filtered_data = filtered_df
+    return filtered_df
     if st.session_state.device_platform_filter:
         filtered_df = filtered_df[filtered_df['DEVICE_PLATFORM'].isin(st.session_state.device_platform_filter)]
     
@@ -793,9 +891,10 @@ def run_precision_metrics_query():
         results = cursor.fetchall()
         df = pd.DataFrame(results, columns=columns)
         
-        # Convert BASE_DATE to datetime if it's not already
-        if not pd.api.types.is_datetime64_any_dtype(df['BASE_DATE']):
-            df['BASE_DATE'] = pd.to_datetime(df['BASE_DATE'])
+        # Convert BASE_DATE to datetime, coercing errors, and ensure it's timezone-naive
+        df['BASE_DATE'] = pd.to_datetime(df['BASE_DATE'], errors='coerce')
+        if hasattr(df['BASE_DATE'].dt, 'tz') and df['BASE_DATE'].dt.tz is not None:
+            df['BASE_DATE'] = df['BASE_DATE'].dt.tz_localize(None)
         
         # Store the full dataset in session state
         st.session_state.metrics_data = df
@@ -1489,4 +1588,4 @@ def convert_to_date_range(min_date, max_date, current_range=None):
             return (start_date, end_date)
         
         return (min_date, max_date)
-    return None 
+    return None
