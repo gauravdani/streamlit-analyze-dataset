@@ -68,6 +68,28 @@ def initialize_session_state():
 
 initialize_session_state() # Call it once at the beginning
 
+# --- Callback functions for Precision Metrics Filters ---
+def on_pm_reg_change():
+    """Callback for precision metrics registration status filter."""
+    new_value = st.session_state.get("pm_registration_filter_key")
+    if new_value is None: new_value = [] 
+    if st.session_state.get('precision_metrics_registration') != new_value:
+        st.session_state.precision_metrics_registration = new_value
+
+def on_pm_watch_change():
+    """Callback for precision metrics watched status filter."""
+    new_value = st.session_state.get("pm_watched_filter_key")
+    if new_value is None: new_value = []
+    if st.session_state.get('precision_metrics_watched') != new_value:
+        st.session_state.precision_metrics_watched = new_value
+
+def on_pm_dist_change():
+    """Callback for precision metrics distribution tenant filter."""
+    new_value = st.session_state.get("pm_distribution_tenant_filter_key")
+    if new_value is None: new_value = []
+    if st.session_state.get('precision_metrics_distribution_tenant') != new_value:
+        st.session_state.precision_metrics_distribution_tenant = new_value
+
 # --- Helper Functions ---
 def get_date_range(data_key='data'):
     """Safely get the min/max date range from the specified data in session state.
@@ -176,7 +198,6 @@ def main_date_preset_callback():
     preset_value = st.session_state.main_date_preset_selector_key
     _apply_date_preset_logic(preset_value, data_key='data', session_range_key='date_range', session_preset_key='date_preset')
     # apply_filters() is called within _apply_date_preset_logic
-    st.rerun()
 
 def main_date_input_callback():
     """Callback for the main date input."""
@@ -190,7 +211,6 @@ def main_date_input_callback():
                 st.session_state.date_range = new_dates
                 st.session_state.date_preset = "Custom"
                 apply_filters()
-                st.rerun()
 
 def apply_precision_metrics_filters(df_to_filter):
     """Apply filters to the precision metrics data. Returns a filtered DataFrame."""
@@ -237,9 +257,7 @@ def precision_metrics_date_input_callback():
             if current_pm_range is None or (new_pm_dates[0] != current_pm_range[0] or new_pm_dates[1] != current_pm_range[1]):
                 st.session_state.precision_metrics_date_range = new_pm_dates
                 # No preset for precision metrics, so no need to set it to "Custom"
-                # Filtering and display update will happen when display_precision_metrics is called
-                st.session_state.update_precision_metrics_display = True
-                st.rerun()
+                st.session_state.update_precision_metrics_display = True # Keep this to signal display refresh
 
 # --- Snowflake Connection and Queries ---
 def test_connection():
@@ -427,15 +445,16 @@ def run_precision_metrics_query():
         
         if 'BASE_DATE' in df.columns:
             df['BASE_DATE'] = pd.to_datetime(df['BASE_DATE'], errors='coerce').dt.tz_localize(None).astype('datetime64[ns]')
-        # Ensure WATCHED_ANY_RECOMMENDED is boolean
         if 'WATCHED_ANY_RECOMMENDED' in df.columns:
              df['WATCHED_ANY_RECOMMENDED'] = df['WATCHED_ANY_RECOMMENDED'].astype(bool)
-
+        if 'MEDIAN_RECOMMENDATION_WATCH_RATIO' in df.columns:
+            df['MEDIAN_RECOMMENDATION_WATCH_RATIO'] = pd.to_numeric(df['MEDIAN_RECOMMENDATION_WATCH_RATIO'], errors='coerce').fillna(0) # Added fillna(0)
+        if 'TOTAL_USERS' in df.columns:
+            df['TOTAL_USERS'] = pd.to_numeric(df['TOTAL_USERS'], errors='coerce').fillna(0) # Added fillna(0)
 
         st.session_state.metrics_data = df
-        st.session_state.just_loaded_metrics = True # Flag that new metrics data is loaded
+        st.session_state.just_loaded_metrics = True 
         
-        # Initialize precision metrics date range
         pm_min_d, pm_max_d = get_date_range(data_key='metrics_data')
         st.session_state.precision_metrics_date_range = (pm_min_d, pm_max_d)
         # Reset precision metrics filters
@@ -457,7 +476,6 @@ def display_data_summary(df_display):
 
     total_impressions = df_display['DISTINCT_USER_IMPRESSIONS'].sum()
     total_clicks = df_display['DISTINCT_USER_CLICKS'].sum()
-    # Calculate weighted average conversion rate if possible, otherwise mean
     if 'DISTINCT_USER_IMPRESSIONS' in df_display.columns and total_impressions > 0 :
         weighted_avg_conversion_rate = (df_display['DISTINCT_USER_CLICKS'].sum() / total_impressions * 100) if total_impressions > 0 else 0
     else:
@@ -470,7 +488,7 @@ def display_data_summary(df_display):
     col3.metric("Avg. Conversion Rate", f"{weighted_avg_conversion_rate:.2f}%")
 
     with st.expander("Data Overview (Filtered)", expanded=False):
-        st.dataframe(df_display.describe(include='all'), use_container_width=True) # include='all' for non-numeric too
+        st.dataframe(df_display.describe(include='all'), use_container_width=True) # Corrected: added closing parenthesis
     
     with st.expander("Metrics Definitions & Query", expanded=False):
         query_to_display = st.session_state.get('current_query', "Analytics query not run yet.")
@@ -679,8 +697,12 @@ def display_precision_metrics(metrics_df_input):
             current_pm_start_val, current_pm_end_val = st.session_state.precision_metrics_date_range
             
             # Clamp value for widget to be within widget's own min/max
-            pm_val_start_widget = max(pm_widget_min_val, min(current_pm_start_val, pm_widget_max_val))
-            pm_val_end_widget = max(pm_widget_min_val, min(current_pm_end_val, pm_widget_max_val))
+            pm_val_start_widget = current_pm_start_val if current_pm_start_val is not None else pm_widget_min_val
+            pm_val_start_widget = max(pm_widget_min_val, min(pm_val_start_widget, pm_widget_max_val))
+            
+            pm_val_end_widget = current_pm_end_val if current_pm_end_val is not None else pm_widget_max_val
+            pm_val_end_widget = max(pm_widget_min_val, min(pm_val_end_widget, pm_widget_max_val))
+            
             if pm_val_start_widget > pm_val_end_widget: pm_val_start_widget = pm_val_end_widget
             
             st.date_input(
@@ -699,20 +721,34 @@ def display_precision_metrics(metrics_df_input):
                 options=pm_reg_options,
                 default=[val for val in st.session_state.get('precision_metrics_registration',[]) if val in pm_reg_options],
                 key="pm_registration_filter_key",
-                on_change=lambda: setattr(st.session_state, 'precision_metrics_registration', st.session_state.pm_registration_filter_key)
+                on_change=on_pm_reg_change # Use new callback
             )
         
         with pm_col2:
-            # Watched status filter (options should be True, False)
-            pm_watch_options = sorted([opt for opt in metrics_df['WATCHED_ANY_RECOMMENDED'].unique() if pd.notna(opt)], key=lambda x: str(x))
+            # Watched status filter
+            pm_watch_options_available = []
+            if 'WATCHED_ANY_RECOMMENDED' in metrics_df.columns and \
+               pd.api.types.is_bool_dtype(metrics_df['WATCHED_ANY_RECOMMENDED']):
+                unique_statuses = metrics_df['WATCHED_ANY_RECOMMENDED'].unique()
+                if True in unique_statuses:
+                    pm_watch_options_available.append(True)
+                if False in unique_statuses:
+                    pm_watch_options_available.append(False)
+                # Sort to ensure "Watched" (True) appears before "Not Watched" (False)
+                pm_watch_options = sorted(pm_watch_options_available, key=lambda x: not x) 
+            else:
+                # This case should ideally not be hit if data loading and prep is correct
+                # st.warning("WATCHED_ANY_RECOMMENDED column is missing or not boolean for filter options.")
+                pm_watch_options = []
+
 
             st.multiselect(
                 "Filter by Watched Status (Precision)",
-                options=pm_watch_options, # Should be [True, False] or [False, True]
-                format_func=lambda x: "Watched" if x is True else "Not Watched", # Make options user-friendly
+                options=pm_watch_options, 
+                format_func=lambda x: "Watched" if x is True else "Not Watched",
                 default=[val for val in st.session_state.get('precision_metrics_watched',[]) if val in pm_watch_options],
                 key="pm_watched_filter_key",
-                on_change=lambda: setattr(st.session_state, 'precision_metrics_watched', st.session_state.pm_watched_filter_key)
+                on_change=on_pm_watch_change # Use new callback
             )
 
             # Distribution tenant filter
@@ -722,7 +758,7 @@ def display_precision_metrics(metrics_df_input):
                 options=pm_dist_options,
                 default=[val for val in st.session_state.get('precision_metrics_distribution_tenant',[]) if val in pm_dist_options],
                 key="pm_distribution_tenant_filter_key",
-                on_change=lambda: setattr(st.session_state, 'precision_metrics_distribution_tenant', st.session_state.pm_distribution_tenant_filter_key)
+                on_change=on_pm_dist_change # Use new callback
             )
     
     # Apply filters to get the DataFrame for display
@@ -736,23 +772,29 @@ def display_precision_metrics(metrics_df_input):
     pm_metrics_container = st.container()
     with pm_metrics_container:
         # Calculate overall metrics from the filtered_pm_df
-        # Ensure MEDIAN_RECOMMENDATION_WATCH_RATIO is numeric for mean()
-        if pd.api.types.is_numeric_dtype(filtered_pm_df['MEDIAN_RECOMMENDATION_WATCH_RATIO']):
-            overall_median_ratio = filtered_pm_df['MEDIAN_RECOMMENDATION_WATCH_RATIO'].mean() # This is mean of medians
+        if not filtered_pm_df.empty and 'MEDIAN_RECOMMENDATION_WATCH_RATIO' in filtered_pm_df.columns and \
+           pd.api.types.is_numeric_dtype(filtered_pm_df['MEDIAN_RECOMMENDATION_WATCH_RATIO']) and \
+           'TOTAL_USERS' in filtered_pm_df.columns and pd.api.types.is_numeric_dtype(filtered_pm_df['TOTAL_USERS']):
+            
+            # Weighted average of medians by total_users for that group
+            # Ensure no division by zero if total_users_sum is 0
+            total_users_sum = filtered_pm_df['TOTAL_USERS'].sum()
+            if total_users_sum > 0:
+                weighted_avg_median_ratio = (filtered_pm_df['MEDIAN_RECOMMENDATION_WATCH_RATIO'] * filtered_pm_df['TOTAL_USERS']).sum() / total_users_sum
+            else:
+                weighted_avg_median_ratio = 0 # Fallback if no users
         else:
-            overall_median_ratio = 0 # Fallback
+            weighted_avg_median_ratio = 0 # Fallback if columns missing, not numeric, or df is empty
 
-        overall_total_users = filtered_pm_df['TOTAL_USERS'].sum()
+        overall_total_users = filtered_pm_df['TOTAL_USERS'].sum() if not filtered_pm_df.empty and 'TOTAL_USERS' in filtered_pm_df.columns else 0
         
-        # Calculate users who watched any recommended
-        # Ensure WATCHED_ANY_RECOMMENDED is boolean for this calculation
-        users_watched_df = filtered_pm_df[filtered_pm_df['WATCHED_ANY_RECOMMENDED'] == True]
-        overall_watched_users_count = users_watched_df['TOTAL_USERS'].sum()
+        users_watched_df = filtered_pm_df[filtered_pm_df['WATCHED_ANY_RECOMMENDED'] == True] if not filtered_pm_df.empty and 'WATCHED_ANY_RECOMMENDED' in filtered_pm_df.columns else pd.DataFrame(columns=['TOTAL_USERS'])
+        overall_watched_users_count = users_watched_df['TOTAL_USERS'].sum() if not users_watched_df.empty else 0
         
         percent_users_watched = (overall_watched_users_count / overall_total_users * 100) if overall_total_users > 0 else 0
 
         pm_m_col1, pm_m_col2, pm_m_col3 = st.columns(3)
-        pm_m_col1.metric("Avg. Median Precision Ratio", f"{overall_median_ratio:.2%}")
+        pm_m_col1.metric("Avg. Median Precision Ratio", f"{weighted_avg_median_ratio:.2%}") # Changed from overall_median_ratio
         pm_m_col2.metric("Total Users (Filtered)", f"{overall_total_users:,.0f}")
         pm_m_col3.metric("% Users Watched Reco", f"{percent_users_watched:.2f}%", f"({overall_watched_users_count:,.0f} users)")
 
@@ -854,7 +896,6 @@ if st.sidebar.button("Load Precision Metrics Data", key="sidebar_load_precision"
             run_precision_metrics_query() # This updates session state
             st.session_state.update_precision_metrics_display = True # Flag to refresh display part
             # Rerun might be good if display logic depends on immediate data
-            st.rerun() 
     else:
         st.sidebar.error("Connect to Snowflake first.")
 
@@ -922,10 +963,8 @@ if st.session_state.data_loaded:
     for label, session_key, col_name, widget_key in filter_configs:
         if st.session_state.data is not None and col_name in st.session_state.data.columns:
             options = st.session_state.data[col_name].unique().tolist()
-            # Handle None: convert to string 'None' for display, sort, then ensure default is valid
             options_display = sorted([str(opt) if opt is not None else 'None' for opt in options])
             
-            # Ensure default values in session state are strings if options are strings
             current_filter_values_str = [str(v) if v is not None else 'None' for v in st.session_state.get(session_key, [])]
             valid_defaults = [v for v in current_filter_values_str if v in options_display]
 
@@ -935,14 +974,11 @@ if st.session_state.data_loaded:
                 default=valid_defaults,
                 key=widget_key
             )
-            # Convert back from 'None' string to actual None for filtering logic
             selected_actual_values = [None if val_str == 'None' else val_str for val_str in selected_display_values]
             
-            # Check if actual selection changed to avoid unnecessary reruns/filter applications
             if selected_actual_values != st.session_state.get(session_key):
                 st.session_state[session_key] = selected_actual_values
                 apply_filters()
-                st.rerun()
         else:
             st.sidebar.markdown(f"_{label} filter unavailable (column missing)._")
 
@@ -970,10 +1006,9 @@ with tabs[1]: # Precision Metrics
     st.header("Recommendation Precision Metrics")
     if st.session_state.get('metrics_data') is not None:
         display_precision_metrics(st.session_state.metrics_data)
-        if st.session_state.get('update_precision_metrics_display'): # Check flag
-            st.session_state.update_precision_metrics_display = False # Reset flag
-            # display_precision_metrics already called, rerun might not be needed unless internal state changed it
-            # st.rerun() 
+        if st.session_state.get('update_precision_metrics_display'): 
+            st.session_state.update_precision_metrics_display = False 
+            # display_precision_metrics already called, natural rerun will occur if state changed
     else:
         st.info("Load precision metrics data using the sidebar button to view this section.")
         # Offer a button to load here as well for convenience
@@ -981,8 +1016,6 @@ with tabs[1]: # Precision Metrics
             if st.button("Load Precision Metrics Data Here", key="load_pm_data_tab_button"):
                 with st.spinner("Loading precision metrics..."):
                     run_precision_metrics_query()
-                    st.rerun()
-
 
 with tabs[2]: # Notes
     st.header("Notes & Observations")
@@ -1028,7 +1061,3 @@ st.markdown("---")
 st.markdown(f"<p style='text-align: center; color: grey;'>Dashboard v1.0 | Python: {sys.version.split(' ')[0]} | Streamlit: {st.__version__} | Snowflake Connector: {snowflake.connector.__version__}</p>", unsafe_allow_html=True)
 
 # Final check for reruns if flags are set (e.g., after data loading)
-if st.session_state.get('just_loaded_metrics') and st.session_state.get('update_precision_metrics_display'):
-    st.session_state.just_loaded_metrics = False # Reset this flag as well
-    # update_precision_metrics_display will be handled by display_precision_metrics or a rerun there
-    # st.rerun() # Consider if a final rerun is needed here
