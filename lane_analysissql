@@ -1,0 +1,156 @@
+# This SQL script is designed to analyze user interactions with different lanes in a streaming service application.
+# Version 1.0
+WITH correct_lane_views_f AS (
+            SELECT *,
+                playground.dani.standardize_lane_type(list_type, list_name) AS lane_type,
+                case when user_id like 'JNAA%' then 'no' else 'yes' end as is_registered,
+            FROM joyn_snow.im_main.lane_views_f
+            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
+        ),
+        correct_as_f AS (
+            SELECT user_id,lane_type,base_date,lane_label,event_type,distribution_tenant,
+                playground.dani.standardize_lane_type(lane_type, lane_label) AS rlane_type
+            FROM joyn_snow.im_main.asset_select_f
+            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
+            union all
+            SELECT user_id,lane_type,base_date,lane_label,event_type,
+                playground.dani.standardize_lane_type(lane_type, lane_label) AS rlane_type, distribution_tenant
+            FROM joyn_snow.im_main.video_playback_request_f
+            WHERE base_date > dateadd(DAY, -365, CURRENT_DATE)
+        )
+        SELECT 
+            a.base_date,a.lane_type,a.is_registered,a.device_platform,a.distribution_tenant,
+            HLL(DISTINCT a.user_id) as distinct_user_impressions,
+            HLL(DISTINCT CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) AS distinct_user_clicks,
+            ROUND((HLL(CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) / NULLIF(COUNT(DISTINCT a.user_id), 0)) * 100, 2) AS conversion_rate_pct 
+        FROM correct_lane_views_f a 
+        LEFT JOIN correct_as_f b ON 
+        (a.user_id = b.user_id  and a.lane_type = b.rlane_type AND datediff(day, a.base_date, b.base_date) < 8 and b.base_date >= a.base_date and a.distribution_tenant = b.distribution_tenant)
+        GROUP BY all 
+        order by 1 asc;
+# version: 2.0
+WITH correct_lane_views_f AS (
+    SELECT *,
+        CASE 
+            WHEN LOWER(list_name) LIKE 'weil du%gesehen hast' THEN 'becauseyouwatchedlane'
+            WHEN LOWER(list_name) LIKE 'entdecke%' THEN 'becauseyouwatchedlanediscovery'
+            WHEN LOWER(list_type) LIKE '%big_teaser%' OR LOWER(list_type) LIKE '%bigteaserlane%' THEN 'bigteaserlane'
+            WHEN (list_type = 'seasonlane' AND list_name = 'trailers') THEN 'trailerandclipslane'
+            WHEN list_type = 'trailer & clips' THEN 'trailerandclipslane'
+            WHEN (list_type = 'extras' AND list_name = 'NaN') THEN 'trailerandclipslane'
+            WHEN list_name ILIKE '%highlights%' THEN 'highlightslane'
+            WHEN list_type = 'bookmark' THEN 'bookmarklane'
+            WHEN list_type IN ('channel', 'mediatek') THEN 'channellane'
+            WHEN list_type LIKE '%search%' OR LOWER(list_name) LIKE 'search%' OR (LOWER(list_type) LIKE 'catalogue' AND LOWER(screen_name) LIKE 'search') THEN 'searchresult'
+            WHEN list_type IN ('episode', 'season', 'folgen') THEN 'seasonlane'
+            WHEN LOWER(list_type) IN ('morelikethis', 'recommend','mlt') OR LOWER(list_name) IN ('ähnliche videos', 'recommendation') THEN 'morelikethis'
+            WHEN list_type = 'recoforyoulane' OR list_name ILIKE 'Empfehlungen für dich' OR list_type ILIKE 'rfy' THEN 'recoforyoulane'
+            WHEN list_type = 'live' OR list_type LIKE '%livelane%' OR list_name = 'Live-TV' THEN 'livelane'
+            WHEN list_name = 'Beliebt auf Joyn' AND list_type = 'standard' THEN 'popularonjoynlane'
+            WHEN list_type = 'standard' THEN 'standardlane'
+            WHEN list_type = 'resume' THEN 'resumelane'
+            WHEN list_type IN ('hero lane', 'hero', 'HeroLane') THEN 'herolane'
+            WHEN list_type = 'featured' THEN 'featuredlane'
+            WHEN list_type = 'grid' AND list_name LIKE 'Neue Filme' THEN 'filmegrid'
+            WHEN list_type IN ('compilation', 'grıd') THEN 'grid'
+            WHEN list_type IN ('-1', '', 'list') THEN 'undefined'
+            WHEN list_type IN ('detailhero', 'detailHero') THEN 'detailhero'
+            WHEN list_type = 'navigation' THEN 'livetvlane'
+            WHEN list_type = 'watch assistant lane' THEN 'watchassistantlane'
+            WHEN list_name IN (
+                'Krimi','Kids','Action','Thriller','Packende Historienfilme','Sci-Fi & Fantasy','US-Serien-Hits',
+                'Anime','Neue Filme auf Joyn','Europäische Filme und Serien','Drama','Harter Horror ab 18',
+                'Schauerliche Geschichten','Crime','Die beliebtesten Filme','Filmklassiker','Serien zum Bingen',
+                'Action & Abenteuer','Komödie','US-Crime Serien','Doku & Reportage','Horror','Comedy','Ganz großes Kino',
+                'TV Shows','Total romantisch','Romantik','Kunterbunte Filme für Kids','Reality TV','Serien zum Bingen',
+                'Die beliebtesten Filme','Filmklassiker','Lust und Leidenschaft','Killer in Serie',
+                'Großes Kino fürs Osterfest','Bildgewaltige Sci-Fi-Action','Feuer frei für Action!','Romantische Komödien',
+                'Valentinstag: Love is in the Air','Blutiger Horror ab 18','Go East: Asia Kino',
+                'Sportfilme, Shows und Dokus streamen','Doku','Im TV verpasst?','Die besten Filme aus dem Pay-TV',
+                'Starke Frauen in Serie','Reality-TV','Starke Frauen in Serie','Kochen leicht gemacht',
+                'Anti-Valentinstag: Schlachten statt Schmachten','Originals & Exclusives','Geheimtipps: Ungewöhnlich gut',
+                'Glück auf vier Pfoten','Die beliebtesten Serien & Shows','Ran an Haus und Garten', 'Oscar® Filme',
+                'Schlachten statt Schmachten', 'Spektakulärer Wassersport', 'Bewegende Biografien',
+                'Vor TV schon jetzt bei PLUS+', 'Alles rund ums Kochen', 'Geistreiches', 'Bock auf Bingen?', 'Zombies!',
+                'Wenn Liebe schmerzt', 'Starke Frauen', 'Hunde richtig verstehen', 'Top-Serien aus dem Pay TV',
+                'Packende Mountainbike Dokus', 'Feuer frei', 'Zeit für Zombies', 'Spektakulärer Wintersport',
+                'Abenteuer in ferne Welten', 'Oscar® Filme auf Joyn', 'Umbauen & Einrichten', 'Geistreiche Unterhaltung',
+                'Aus Alt mach Neu', 'Tierisch interessant', 'Echt gruselig: True Crime', 'Vor TV jetzt schon bei PLUS+',
+                'TV-Shows','Lach dich untot', 'Exklusive Serien', 'Feel-Good-Filme',
+                'Starke Frauen am Weltfrauentag', 'Kunterbunte Animation', 'Comedy aus Deutschland','Spektakulärer Wintersport'
+            ) AND list_type = 'catalogue' THEN 'genrelane'
+            ELSE list_type
+        END AS lane_type,
+        CASE WHEN user_id LIKE 'JNAA%' THEN 'no' ELSE 'yes' END AS is_registered
+    FROM joyn_snow.im_main.lane_views_f
+    WHERE base_date > DATEADD(DAY, -365, CURRENT_DATE)
+),
+correct_as_f AS (
+    SELECT user_id, lane_type, base_date, lane_label, event_type, distribution_tenant,
+        -- Reuse the same CASE logic (use list_type -> lane_type and list_name -> lane_label)
+        CASE 
+            -- Replace all references of list_type and list_name with lane_type and lane_label
+            -- (same CASE block as above, adjusted accordingly)
+            WHEN LOWER(lane_label) LIKE 'weil du%gesehen hast' THEN 'becauseyouwatchedlane'
+            WHEN LOWER(lane_label) LIKE 'entdecke%' THEN 'becauseyouwatchedlanediscovery'
+            WHEN LOWER(lane_type) LIKE '%big_teaser%' OR LOWER(lane_type) LIKE '%bigteaserlane%' THEN 'bigteaserlane'
+            WHEN (lane_type = 'seasonlane' AND lane_label = 'trailers') THEN 'trailerandclipslane'
+            WHEN lane_type = 'trailer & clips' THEN 'trailerandclipslane'
+            WHEN (lane_type = 'extras' AND lane_label = 'NaN') THEN 'trailerandclipslane'
+            WHEN lane_label ILIKE '%highlights%' THEN 'highlightslane'
+            WHEN lane_type = 'bookmark' THEN 'bookmarklane'
+            WHEN lane_type IN ('channel', 'mediatek') THEN 'channellane'
+            WHEN lane_type LIKE '%search%' OR LOWER(lane_label) LIKE 'search%' THEN 'searchresult'
+            WHEN lane_type IN ('episode', 'season', 'folgen') THEN 'seasonlane'
+            WHEN LOWER(lane_type) IN ('morelikethis', 'recommend','mlt') OR LOWER(lane_label) IN ('ähnliche videos', 'recommendation') THEN 'morelikethis'
+            WHEN lane_type = 'recoforyoulane' OR lane_label ILIKE 'Empfehlungen für dich' OR lane_type ILIKE 'rfy' THEN 'recoforyoulane'
+            WHEN lane_type = 'live' OR lane_type LIKE '%livelane%' OR lane_label = 'Live-TV' THEN 'livelane'
+            WHEN lane_label = 'Beliebt auf Joyn' AND lane_type = 'standard' THEN 'popularonjoynlane'
+            WHEN lane_type = 'standard' THEN 'standardlane'
+            WHEN lane_type = 'resume' THEN 'resumelane'
+            WHEN lane_type IN ('hero lane', 'hero', 'HeroLane') THEN 'herolane'
+            WHEN lane_type = 'featured' THEN 'featuredlane'
+            WHEN lane_type = 'grid' AND lane_label LIKE 'Neue Filme' THEN 'filmegrid'
+            WHEN lane_type IN ('compilation', 'grıd') THEN 'grid'
+            WHEN lane_type IN ('-1', '', 'list') THEN 'undefined'
+            WHEN lane_type IN ('detailhero', 'detailHero') THEN 'detailhero'
+            WHEN lane_type = 'navigation' THEN 'livetvlane'
+            WHEN lane_type = 'watch assistant lane' THEN 'watchassistantlane'
+            WHEN lane_label IN (...) AND lane_type = 'catalogue' THEN 'genrelane'
+            ELSE lane_type
+        END AS rlane_type
+    FROM joyn_snow.im_main.asset_select_f
+    WHERE base_date > DATEADD(DAY, -365, CURRENT_DATE)
+    
+    UNION ALL
+    
+    SELECT user_id, lane_type, base_date, lane_label, event_type, distribution_tenant,
+        -- Same case logic as above
+        CASE 
+            ...
+        END AS rlane_type
+    FROM joyn_snow.im_main.video_playback_request_f
+    WHERE base_date > DATEADD(DAY, -365, CURRENT_DATE)
+)
+
+SELECT 
+    a.base_date,
+    a.lane_type,
+    a.is_registered,
+    a.device_platform,
+    a.distribution_tenant,
+    HLL(DISTINCT a.user_id) AS distinct_user_impressions,
+    HLL(DISTINCT CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) AS distinct_user_clicks,
+    ROUND(
+        (HLL(CASE WHEN b.user_id IS NOT NULL THEN b.user_id END) / NULLIF(COUNT(DISTINCT a.user_id), 0)) * 100,
+        2
+    ) AS conversion_rate_pct 
+FROM correct_lane_views_f a 
+LEFT JOIN correct_as_f b 
+    ON a.user_id = b.user_id  
+    AND a.lane_type = b.rlane_type 
+    AND DATEDIFF(DAY, a.base_date, b.base_date) < 8 
+    AND b.base_date >= a.base_date 
+    AND a.distribution_tenant = b.distribution_tenant
+GROUP BY ALL 
+ORDER BY 1 ASC;
